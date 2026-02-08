@@ -227,22 +227,34 @@
         }
 
         async function apiCall(endpoint, method = 'GET', body = null) {
-            const options = { method };
-            if (body) {
-                options.headers = { 'Content-Type': 'application/json' };
-                options.body = JSON.stringify(body);
-            }
-            if (authToken) {
-                options.headers = options.headers || {};
-                options.headers['Authorization'] = `Bearer ${authToken}`;
-            }
-            const res = await fetch(endpoint, options);
-            if (res.status === 401) {
-                logout();
-                window.location.href = '/login';
+            try {
+                const options = { method };
+                if (body) {
+                    options.headers = { 'Content-Type': 'application/json' };
+                    options.body = JSON.stringify(body);
+                }
+                if (authToken) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+                const res = await fetch(endpoint, options);
+                if (res.status === 401) {
+                    logout();
+                    window.location.href = '/login';
+                    return null;
+                }
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    console.error(`API Error [${res.status}]:`, errorText);
+                    alert(`请求失败 (${res.status}): ${errorText.substring(0, 100)}`);
+                    return null;
+                }
+                return await res.json();
+            } catch (error) {
+                console.error('Network error:', error);
+                alert('无法连接到服务器，请确保后端服务正在运行。\n\n提示: 运行 py main.py web 启动服务器');
                 return null;
             }
-            return await res.json();
         }
 
         async function loadMe() {
@@ -328,15 +340,17 @@
             const tagsRaw = document.getElementById('tagsInput').value;
             if (!content) return;
             if (visibility === 'group' && !groupId) return alert('请选择团队');
-            await apiCall('/api/add', 'POST', {
+            const res = await apiCall('/api/add', 'POST', {
                 content,
                 visibility,
                 group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
                 tags: tagsRaw
             });
-            document.getElementById('addInput').value = '';
-            document.getElementById('tagsInput').value = '';
-            render('all', '', 1);
+            if (res && res.status === 'success') {
+                document.getElementById('addInput').value = '';
+                document.getElementById('tagsInput').value = '';
+                render('all', '', 1);
+            }
         }
 
         let editingId = null;
