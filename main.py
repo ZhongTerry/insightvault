@@ -990,4 +990,4 @@ async def api_revectorize_all(request: Request, background_tasks: BackgroundTask
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run(app, host='0.0.0.0', port=5000)
+    uvicorn.run(app, host='0.0.0.0', port=8080)

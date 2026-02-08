@@ -62,11 +62,25 @@
             resize: vertical;
             min-height: 80px;
         }
+        .template-field {
+            margin-bottom: 8px;
+        }
+        .template-field label {
+            display: block;
+            font-size: 12px;
+            color: var(--muted);
+            margin-bottom: 4px;
+        }
+        .template-field input,
+        .template-field textarea {
+            margin-bottom: 0;
+        }
         button {
             padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
             font-weight: 600; cursor: pointer;
         }
         .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
         .btn-accent { background: var(--accent); color: #fff; }
         .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
         .btn-small { font-size: 12px; padding: 6px 10px; }
@@ -80,6 +94,14 @@
         #loader { display: none; text-align: center; color: var(--primary); font-weight: 600; margin: 12px 0; }
         @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
         
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 12px;
+            font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            z-index: 2000; animation: toastIn 0.3s ease-out;
+        }
+        @keyframes toastIn { from { bottom: 0; opacity: 0; } to { bottom: 24px; opacity: 1; } }
+
         .modal-overlay {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
@@ -121,7 +143,18 @@
 
         <div class="card">
             <div class="row">
+                <select id="templateSelect" onchange="onTemplateChange()" style="width: auto;">
+                    <option value="none">无模板（自由输入）</option>
+                    <option value="item_entry">条目填充模板</option>
+                    <option value="book_note">读书笔记模板</option>
+                    <option value="meeting_record">会议记录模板</option>
+                </select>
+            </div>
+            <div id="freeInputArea" class="row">
                 <textarea id="addInput" placeholder="记录新的灵感、情报或链接..." onkeydown="handleKeydown(event, addData)"></textarea>
+            </div>
+            <div id="templateInputArea" style="display: none;">
+                <!-- 模板输入框将动态生成 -->
             </div>
             <div class="row">
                 <input id="tagsInput" placeholder="标签 (逗号分隔)">
@@ -133,7 +166,7 @@
                     <option value="">选择团队</option>
                 </select>
             </div>
-            <button class="btn-primary" onclick="addData()">存入情报</button>
+            <button id="addBtn" class="btn-primary" onclick="addData()">存入情报</button>
         </div>
 
         <div class="card">
@@ -213,6 +246,122 @@
         let authToken = localStorage.getItem('authToken') || '';
         let currentUser = null;
         let currentGroups = [];
+        let currentTemplate = 'none';
+
+        // 模板配置
+        const templates = {
+            none: {
+                name: '无模板（自由输入）',
+                fields: []
+            },
+            item_entry: {
+                name: '条目填充模板',
+                fields: [
+                    { key: 'name', label: '名称', type: 'input', placeholder: '输入条目名称' },
+                    { key: 'category', label: '分类', type: 'input', placeholder: '输入分类' },
+                    { key: 'detail', label: '详细说明', type: 'textarea', placeholder: '输入详细信息' }
+                ],
+                format: (data) => `${data.name} 是一个关于 ${data.category} 的条目，具体细节如下：${data.detail}。`
+            },
+            book_note: {
+                name: '读书笔记模板',
+                fields: [
+                    { key: 'book_title', label: '书名', type: 'input', placeholder: '输入书名' },
+                    { key: 'author', label: '作者', type: 'input', placeholder: '输入作者' },
+                    { key: 'chapter', label: '章节', type: 'input', placeholder: '第几章或页码' },
+                    { key: 'quote', label: '摘录', type: 'textarea', placeholder: '书中的原文或要点' },
+                    { key: 'reflection', label: '感悟', type: 'textarea', placeholder: '你的思考和心得' }
+                ],
+                format: (data) => `《${data.book_title}》（作者：${data.author}）\n章节：${data.chapter}\n\n摘录：${data.quote}\n\n感悟：${data.reflection}`
+            },
+            meeting_record: {
+                name: '会议记录模板',
+                fields: [
+                    { key: 'meeting_title', label: '会议主题', type: 'input', placeholder: '输入会议主题' },
+                    { key: 'date', label: '日期', type: 'input', placeholder: '会议日期' },
+                    { key: 'participants', label: '参会人员', type: 'input', placeholder: '参会人员名单' },
+                    { key: 'summary', label: '会议要点', type: 'textarea', placeholder: '讨论的主要内容' },
+                    { key: 'action_items', label: '行动项', type: 'textarea', placeholder: '待办事项和责任人' }
+                ],
+                format: (data) => `会议主题：${data.meeting_title}\n日期：${data.date}\n参会人员：${data.participants}\n\n会议要点：\n${data.summary}\n\n行动项：\n${data.action_items}`
+            }
+        };
+
+        function onTemplateChange() {
+            const templateKey = document.getElementById('templateSelect').value;
+            currentTemplate = templateKey;
+            const template = templates[templateKey];
+            
+            const freeArea = document.getElementById('freeInputArea');
+            const templateArea = document.getElementById('templateInputArea');
+            
+            if (templateKey === 'none') {
+                freeArea.style.display = 'flex';
+                templateArea.style.display = 'none';
+            } else {
+                freeArea.style.display = 'none';
+                templateArea.style.display = 'block';
+                
+                // 动态生成模板输入框
+                templateArea.innerHTML = '';
+                template.fields.forEach(field => {
+                    const div = document.createElement('div');
+                    div.className = 'template-field';
+                    const label = document.createElement('label');
+                    label.textContent = field.label;
+                    div.appendChild(label);
+                    
+                    if (field.type === 'textarea') {
+                        const textarea = document.createElement('textarea');
+                        textarea.id = `tmpl_${field.key}`;
+                        textarea.placeholder = field.placeholder;
+                        textarea.style.minHeight = '60px';
+                        div.appendChild(textarea);
+                    } else {
+                        const input = document.createElement('input');
+                        input.id = `tmpl_${field.key}`;
+                        input.placeholder = field.placeholder;
+                        div.appendChild(input);
+                    }
+                    
+                    templateArea.appendChild(div);
+                });
+            }
+        }
+
+        function getTemplateContent() {
+            if (currentTemplate === 'none') {
+                return document.getElementById('addInput').value;
+            }
+            
+            const template = templates[currentTemplate];
+            const data = {};
+            
+            // 收集模板字段数据
+            for (const field of template.fields) {
+                const value = document.getElementById(`tmpl_${field.key}`).value.trim();
+                if (!value) {
+                    alert(`请填写「${field.label}」`);
+                    return null;
+                }
+                data[field.key] = value;
+            }
+            
+            // 使用模板格式化函数生成内容
+            return template.format(data);
+        }
+
+        function clearTemplateInputs() {
+            if (currentTemplate === 'none') {
+                document.getElementById('addInput').value = '';
+            } else {
+                const template = templates[currentTemplate];
+                template.fields.forEach(field => {
+                    const elem = document.getElementById(`tmpl_${field.key}`);
+                    if (elem) elem.value = '';
+                });
+            }
+        }
 
         function handleKeydown(e, callback) {
             if (e.ctrlKey && e.key === 'Enter') {
@@ -224,6 +373,14 @@
         function logout() {
             localStorage.removeItem('authToken');
             localStorage.removeItem('authUser');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
         }
 
         async function apiCall(endpoint, method = 'GET', body = null) {
@@ -334,22 +491,37 @@
         }
 
         async function addData() {
-            const content = document.getElementById('addInput').value;
+            const content = getTemplateContent();
+            if (!content) return;
+            
             const visibility = document.getElementById('visibilitySelect').value;
             const groupId = document.getElementById('groupSelect').value || null;
             const tagsRaw = document.getElementById('tagsInput').value;
-            if (!content) return;
+            
             if (visibility === 'group' && !groupId) return alert('请选择团队');
-            const res = await apiCall('/api/add', 'POST', {
-                content,
-                visibility,
-                group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
-                tags: tagsRaw
-            });
-            if (res && res.status === 'success') {
-                document.getElementById('addInput').value = '';
-                document.getElementById('tagsInput').value = '';
-                render('all', '', 1);
+            
+            const btn = document.getElementById('addBtn');
+            const originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = '正在存入...';
+
+            try {
+                const res = await apiCall('/api/add', 'POST', {
+                    content,
+                    visibility,
+                    group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
+                    tags: tagsRaw
+                });
+                
+                if (res && res.status === 'success') {
+                    showToast('已存入情报 ✨');
+                    clearTemplateInputs();
+                    document.getElementById('tagsInput').value = '';
+                    render('all', '', 1);
+                }
+            } finally {
+                btn.disabled = false;
+                btn.innerText = originalText;
             }
         }
 
