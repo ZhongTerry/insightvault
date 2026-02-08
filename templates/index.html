@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.85);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(247, 108, 79, 0.15), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 56px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 48px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 28px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .hero {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            padding: 48px;
+            box-shadow: 0 20px 50px rgba(14, 124, 123, 0.12);
+            backdrop-filter: blur(8px);
+            animation: rise 0.7s ease-out;
+        }
+        .hero h1 {
+            font-size: 44px; line-height: 1.1; margin: 0 0 16px;
+        }
+        .hero p { color: var(--muted); font-size: 18px; max-width: 560px; }
+        .cta { margin-top: 28px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .btn {
+            padding: 12px 18px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-outline { border-color: var(--ink); color: var(--ink); background: transparent; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 32px; }
+        .card {
+            background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px;
+            animation: floatIn 0.8s ease-out;
+        }
+        .card h3 { margin: 0 0 8px; }
+        .card p { margin: 0; color: var(--muted); }
+        .hint { margin-top: 24px; color: var(--muted); font-size: 14px; }
+        @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes floatIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @media (max-width: 700px) {
+            .hero { padding: 32px; }
+            .hero h1 { font-size: 34px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div class="brand">InsightVault</div>
+            <div class="nav-links">
+                <a href="/login">登录</a>
+                <a href="/app">进入应用</a>
+                <a href="/groups">团队</a>
+            </div>
+        </div>
+
+        <section class="hero">
+            <h1>把情报变成可检索的资产</h1>
+            <p>多用户隔离、团队共享、向量搜索一体化。用更清晰的结构保存灵感，用更快的方式找到它。</p>
+            <div class="cta">
+                <a class="btn btn-primary" href="/login">登录或注册</a>
+                <a class="btn btn-outline" href="/app">继续使用</a>
+            </div>
+            <div class="grid">
+                <div class="card">
+                    <h3>多用户安全</h3>
+                    <p>JWT 登录与数据隔离，让每条情报都有明确归属。</p>
+                </div>
+                <div class="card">
+                    <h3>团队共享</h3>
+                    <p>邀请码加入团队，按条目设置共享范围。</p>
+                </div>
+                <div class="card">
+                    <h3>语义检索</h3>
+                    <p>向量检索 + 关键词搜索，秒速定位关键内容。</p>
+                </div>
+            </div>
+            <div class="hint" id="continueHint" style="display:none;">检测到登录状态，可直接进入应用。</div>
+        </section>
+    </div>
+    <script>
+        const token = localStorage.getItem('authToken') || '';
+        if (token) {
+            document.getElementById('continueHint').style.display = 'block';
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 团队</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.9);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 15% 20%, rgba(247, 108, 79, 0.18), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 42px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 28px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 26px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: 0 12px 30px rgba(14, 124, 123, 0.08);
+            animation: rise 0.6s ease-out;
+            margin-bottom: 18px;
+        }
+        input {
+            width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+            font-size: 14px; background: #fff; outline: none;
+        }
+        button {
+            padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-accent { background: var(--accent); color: #fff; }
+        .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
+        .btn-small { font-size: 12px; padding: 6px 10px; }
+        .row { display: flex; gap: 12px; flex-wrap: wrap; }
+        .muted { color: var(--muted); font-size: 12px; }
+        .tag { font-size: 11px; background: #f0f0f0; padding: 2px 6px; border-radius: 6px; margin-left: 6px; }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">团队协作空间</div>
+            </div>
+            <div class="nav-links">
+                <a href="/">首页</a>
+                <a href="/app">应用</a>
+                <a href="/login" onclick="logout()">退出</a>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>创建团队</h3>
+            <div class="row">
+                <input id="groupNameInput" placeholder="团队名称">
+                <button class="btn-primary" onclick="createGroup()">创建</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>加入团队</h3>
+            <div class="row">
+                <input id="joinInviteInput" placeholder="邀请码">
+                <button class="btn-accent" onclick="joinGroup()">加入</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h3>我的团队</h3>
+            <div id="groupList" class="muted">暂无团队</div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let currentGroups = [];
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const options = { method };
+            if (body) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify(body);
+            }
+            if (authToken) {
+                options.headers = options.headers || {};
+                options.headers['Authorization'] = `Bearer ${authToken}`;
+            }
+            const res = await fetch(endpoint, options);
+            if (res.status === 401) {
+                logout();
+                window.location.href = '/login';
+                return null;
+            }
+            return await res.json();
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (res && res.user) {
+                currentUser = res.user;
+            }
+        }
+
+        async function loadGroups() {
+            const res = await apiCall('/api/groups');
+            currentGroups = (res && res.groups) ? res.groups : [];
+            renderGroupList();
+        }
+
+        function renderGroupList() {
+            const container = document.getElementById('groupList');
+            if (!currentGroups.length) {
+                container.innerText = '暂无团队';
+                return;
+            }
+            container.innerHTML = '';
+            currentGroups.forEach(g => {
+                const div = document.createElement('div');
+                div.style.margin = '8px 0';
+                div.innerHTML = `${g.name} <span class="tag">${g.role}</span>`;
+                if (g.role === 'admin' || (currentUser && currentUser.role === 'admin')) {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-ghost btn-small';
+                    btn.style.marginLeft = '8px';
+                    btn.textContent = '生成邀请码';
+                    btn.onclick = () => createInvite(g.group_id);
+                    div.appendChild(btn);
+                }
+                const leaveBtn = document.createElement('button');
+                leaveBtn.className = 'btn-ghost btn-small';
+                leaveBtn.style.marginLeft = '6px';
+                leaveBtn.textContent = '退出';
+                leaveBtn.onclick = () => leaveGroup(g.group_id);
+                div.appendChild(leaveBtn);
+                container.appendChild(div);
+            });
+        }
+
+        async function createGroup() {
+            const name = document.getElementById('groupNameInput').value.trim();
+            if (!name) return alert('请输入团队名称');
+            const res = await apiCall('/api/groups', 'POST', { name });
+            if (res && res.status === 'success') {
+                document.getElementById('groupNameInput').value = '';
+                await loadGroups();
+            }
+        }
+
+        async function joinGroup() {
+            const invite_code = document.getElementById('joinInviteInput').value.trim();
+            if (!invite_code) return alert('请输入邀请码');
+            const res = await apiCall('/api/groups/join', 'POST', { invite_code });
+            if (res && res.status === 'success') {
+                document.getElementById('joinInviteInput').value = '';
+                await loadGroups();
+            }
+        }
+
+        async function createInvite(groupId) {
+            const res = await apiCall(`/api/groups/${groupId}/invites`, 'POST', { max_uses: 20, expires_in_hours: 168 });
+            if (res && res.invite_code) {
+                prompt('邀请码 (复制给团队成员):', res.invite_code);
+            }
+        }
+
+        async function leaveGroup(groupId) {
+            if (!confirm('确认退出该团队？')) return;
+            const res = await apiCall(`/api/groups/${groupId}/leave`, 'POST');
+            if (res && res.status === 'success') {
+                await loadGroups();
+            }
+        }
+
+        window.onload = async () => {
+            if (!authToken) {
+                window.location.href = '/login';
+                return;
+            }
+            await loadMe();
+            await loadGroups();
+        };
+    </script>
+</body>
+</html>

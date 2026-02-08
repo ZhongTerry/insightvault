@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 应用</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.9);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(247, 108, 79, 0.15), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 1000px; margin: 0 auto; padding: 42px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 28px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 26px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .user-pill {
+            padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+            font-size: 12px; color: var(--muted);
+        }
+        .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+        .row:last-of-type { margin-bottom: 0; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 18px;
+            box-shadow: 0 12px 30px rgba(14, 124, 123, 0.08);
+            animation: rise 0.6s ease-out;
+            margin-bottom: 18px;
+        }
+        input, select, textarea {
+            width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+            font-size: 14px; background: #fff; outline: none; font-family: inherit;
+        }
+        textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+        button {
+            padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-accent { background: var(--accent); color: #fff; }
+        .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
+        .btn-small { font-size: 12px; padding: 6px 10px; }
+        .muted { color: var(--muted); font-size: 12px; }
+        .item { border-bottom: 1px solid var(--line); padding: 14px 4px; }
+        .item:last-child { border-bottom: none; }
+        .item-meta { font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 10px; }
+        .tag { font-size: 11px; background: #f0f0f0; padding: 2px 6px; border-radius: 6px; margin-left: 6px; }
+        .score { font-size: 11px; color: #0e7c7b; background: #e9f6f5; padding: 2px 6px; border-radius: 6px; }
+        .pagination { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; }
+        #loader { display: none; text-align: center; color: var(--primary); font-weight: 600; margin: 12px 0; }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
+            z-index: 1000;
+        }
+        .modal-card {
+            background: var(--bg-1); width: 90%; max-width: 600px; padding: 24px;
+            border-radius: 20px; box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+            max-height: 85vh; overflow-y: auto;
+        }
+        .tag-list-item {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 8px 0; border-bottom: 1px solid var(--line);
+        }
+        .tag-list-item:last-child { border-bottom: none; }
+
+        @media (max-width: 700px) {
+            .nav { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">你的个人与团队情报空间</div>
+            </div>
+            <div>
+                <span class="user-pill" id="userPill">未登录</span>
+                <span class="nav-links">
+                    <a href="/">首页</a>
+                    <a href="/groups">团队</a>
+                    <a href="#" onclick="openManageTagsModal()">标签管理</a>
+                    <a href="/login" onclick="logout()">退出</a>
+                </span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="row">
+                <textarea id="addInput" placeholder="记录新的灵感、情报或链接..." onkeydown="handleKeydown(event, addData)"></textarea>
+            </div>
+            <div class="row">
+                <input id="tagsInput" placeholder="标签 (逗号分隔)">
+                <select id="visibilitySelect" onchange="onVisibilityChange()">
+                    <option value="private">仅自己</option>
+                    <option value="group">团队共享</option>
+                </select>
+                <select id="groupSelect" disabled>
+                    <option value="">选择团队</option>
+                </select>
+            </div>
+            <button class="btn-primary" onclick="addData()">存入情报</button>
+        </div>
+
+        <div class="card">
+            <textarea id="searchInput" placeholder="搜索已存内容..." onkeydown="handleKeydown(event, () => doSearch('ai'))" style="margin-bottom: 12px;"></textarea>
+            <div class="row">
+                <button class="btn-primary" onclick="doSearch('ai')">AI 搜索</button>
+                <button class="btn-accent" onclick="doSearch('key')">关键词</button>
+                <button class="btn-ghost" onclick="doSearch('tag')">标签</button>
+                <button class="btn-ghost" onclick="doSearch('all')">全部</button>
+                <button id="revectorizeBtn" class="btn-ghost" onclick="revectorizeAll()">重构向量</button>
+            </div>
+        </div>
+
+        <div id="loader">处理中...</div>
+        <div class="card" id="results"></div>
+
+        <div class="pagination">
+            <button id="prevBtn" class="btn-ghost" onclick="changePage(-1)">上一页</button>
+            <span id="pageInfo" class="muted">第 1 页</span>
+            <button id="nextBtn" class="btn-ghost" onclick="changePage(1)">下一页</button>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div id="editModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <h3>编辑情报</h3>
+            <div class="row">
+                <textarea id="editContentInput" placeholder="请输入内容..." onkeydown="handleKeydown(event, saveEdit)"></textarea>
+            </div>
+            <div class="row">
+                <input id="editTagsInput" placeholder="标签 (逗号分隔)">
+                <select id="editVisibilitySelect" onchange="onEditVisibilityChange()">
+                    <option value="private">仅自己</option>
+                    <option value="group">团队共享</option>
+                </select>
+                <select id="editGroupSelect">
+                    <option value="">选择团队</option>
+                </select>
+            </div>
+            <div class="row" style="justify-content: flex-end; margin-top: 12px;">
+                <button class="btn-ghost" onclick="closeEditModal()">取消</button>
+                <button class="btn-primary" onclick="saveEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Manage Tags Modal -->
+    <div id="manageTagsModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3>标签管理</h3>
+                <button class="btn-ghost btn-small" onclick="closeManageTagsModal()">关闭</button>
+            </div>
+            <div id="tagsListContainer" style="margin-top: 16px;">
+                <div class="muted">正在加载标签...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Rename Tag Modal -->
+    <div id="renameTagModal" class="modal-overlay" style="display: none; z-index: 1001;">
+        <div class="modal-card" style="max-width: 400px;">
+            <h3>重命名标签</h3>
+            <input id="renameTagNameInput" placeholder="新的标签名称">
+            <div class="row" style="justify-content: flex-end; margin-top: 12px;">
+                <button class="btn-ghost" onclick="closeRenameTagModal()">取消</button>
+                <button class="btn-primary" onclick="saveTagName()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentPage = 1;
+        let currentType = 'all';
+        let currentQuery = '';
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let currentGroups = [];
+
+        function handleKeydown(e, callback) {
+            if (e.ctrlKey && e.key === 'Enter') {
+                e.preventDefault();
+                callback();
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const options = { method };
+            if (body) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify(body);
+            }
+            if (authToken) {
+                options.headers = options.headers || {};
+                options.headers['Authorization'] = `Bearer ${authToken}`;
+            }
+            const res = await fetch(endpoint, options);
+            if (res.status === 401) {
+                logout();
+                window.location.href = '/login';
+                return null;
+            }
+            return await res.json();
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (!res || !res.user) return;
+            currentUser = res.user;
+            document.getElementById('userPill').innerText = currentUser.name || currentUser.email;
+            const isAdmin = currentUser.role === 'admin';
+            document.getElementById('revectorizeBtn').style.display = isAdmin ? 'inline-block' : 'none';
+        }
+
+        async function loadGroups() {
+            const res = await apiCall('/api/groups');
+            currentGroups = (res && res.groups) ? res.groups : [];
+            const select = document.getElementById('groupSelect');
+            select.innerHTML = '<option value="">选择团队</option>';
+            currentGroups.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.group_id;
+                opt.textContent = `${g.name} (${g.role})`;
+                select.appendChild(opt);
+            });
+        }
+
+        function onVisibilityChange() {
+            const visibility = document.getElementById('visibilitySelect').value;
+            const groupSelect = document.getElementById('groupSelect');
+            groupSelect.disabled = visibility !== 'group';
+        }
+
+        async function render(type, q, page) {
+            currentType = type;
+            currentQuery = q;
+            currentPage = page;
+
+            document.getElementById('loader').style.display = 'block';
+            const data = await apiCall(`/api/search?type=${type}&q=${q}&page=${page}`);
+            const container = document.getElementById('results');
+            document.getElementById('loader').style.display = 'none';
+
+            if (!Array.isArray(data)) {
+                container.innerHTML = '<div class="muted">加载失败</div>';
+                return;
+            }
+            container.innerHTML = data.length ? '' : '<div class="muted">无内容</div>';
+
+            data.forEach(item => {
+                const scoreStr = item.score ? `<span class="score">匹配度 ${(item.score * 100).toFixed(1)}%</span>` : '';
+                const visStr = item.visibility === 'group'
+                    ? `<span class="tag">团队: ${item.group_name || '未命名'}</span>`
+                    : `<span class="tag">私有</span>`;
+                const tagsArr = Array.isArray(item.tags) ? item.tags : [];
+                const tagsStr = tagsArr.map(tag => `<span class="tag">#${tag}</span>`).join(' ');
+                const tagsRaw = tagsArr.join(', ');
+                container.innerHTML += `
+                    <div class="item" id="item-${item.id}">
+                        <div>${item.content}</div>
+                        <div class="item-meta">
+                            <span>${item.created_at} ${scoreStr} ${visStr} ${tagsStr}</span>
+                            <span>
+                                <button class="btn-ghost btn-small" onclick="editItem(${item.id}, \`${item.content.replace(/`/g, '\\`')}\`, '${item.visibility}', ${item.group_id || 'null'}, \`${tagsRaw.replace(/`/g, '\\`')}\`)" >编辑</button>
+                                <button class="btn-ghost btn-small" onclick="deleteItem(${item.id})">删除</button>
+                            </span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            document.getElementById('pageInfo').innerText = `第 ${page} 页`;
+            document.getElementById('prevBtn').disabled = (page === 1);
+            document.getElementById('nextBtn').disabled = (data.length < 10);
+        }
+
+        function doSearch(type) {
+            if (type === 'all') document.getElementById('searchInput').value = '';
+            render(type, document.getElementById('searchInput').value, 1);
+        }
+
+        async function addData() {
+            const content = document.getElementById('addInput').value;
+            const visibility = document.getElementById('visibilitySelect').value;
+            const groupId = document.getElementById('groupSelect').value || null;
+            const tagsRaw = document.getElementById('tagsInput').value;
+            if (!content) return;
+            if (visibility === 'group' && !groupId) return alert('请选择团队');
+            await apiCall('/api/add', 'POST', {
+                content,
+                visibility,
+                group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
+                tags: tagsRaw
+            });
+            document.getElementById('addInput').value = '';
+            document.getElementById('tagsInput').value = '';
+            render('all', '', 1);
+        }
+
+        let editingId = null;
+
+        async function editItem(id, oldContent, oldVisibility, oldGroupId, oldTags) {
+            editingId = id;
+            document.getElementById('editContentInput').value = oldContent;
+            document.getElementById('editTagsInput').value = oldTags || '';
+            document.getElementById('editVisibilitySelect').value = oldVisibility || 'private';
+            
+            // Populate groups in modal
+            const select = document.getElementById('editGroupSelect');
+            select.innerHTML = '<option value="">选择团队</option>';
+            currentGroups.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.group_id;
+                opt.textContent = `${g.name} (${g.role})`;
+                if (g.group_id == oldGroupId) opt.selected = true;
+                select.appendChild(opt);
+            });
+            
+            onEditVisibilityChange();
+            document.getElementById('editModal').style.display = 'flex';
+        }
+
+        function onEditVisibilityChange() {
+            const visibility = document.getElementById('editVisibilitySelect').value;
+            document.getElementById('editGroupSelect').disabled = (visibility !== 'group');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = 'none';
+        }
+
+        async function saveEdit() {
+            const id = editingId;
+            const content = document.getElementById('editContentInput').value;
+            const visibility = document.getElementById('editVisibilitySelect').value;
+            const groupId = document.getElementById('editGroupSelect').value || null;
+            const tags = document.getElementById('editTagsInput').value;
+
+            if (!content.trim()) return alert('内容不能为空');
+            if (visibility === 'group' && !groupId) return alert('请选择团队');
+
+            const res = await apiCall(`/api/update/${id}`, 'PUT', {
+                content, visibility, group_id: visibility === 'group' ? parseInt(groupId, 10) : null, tags
+            });
+            if (res && res.status === 'success') {
+                closeEditModal();
+                render(currentType, currentQuery, currentPage);
+            }
+        }
+
+        async function deleteItem(id) {
+            if (!confirm('确定要删除这条情报吗？')) return;
+            const res = await apiCall(`/api/delete/${id}`, 'DELETE');
+            if (res && res.status === 'success') {
+                render(currentType, currentQuery, currentPage);
+            }
+        }
+
+        async function openManageTagsModal() {
+            document.getElementById('manageTagsModal').style.display = 'flex';
+            await loadTagsList();
+        }
+
+        function closeManageTagsModal() {
+            document.getElementById('manageTagsModal').style.display = 'none';
+        }
+
+        async function loadTagsList() {
+            const container = document.getElementById('tagsListContainer');
+            container.innerHTML = '<div class="muted">正在加载...</div>';
+            const res = await apiCall('/api/tags');
+            if (!res || !res.tags) {
+                container.innerHTML = '<div class="muted">加载失败</div>';
+                return;
+            }
+            if (res.tags.length === 0) {
+                container.innerHTML = '<div class="muted">你还没有创建任何标签</div>';
+                return;
+            }
+            container.innerHTML = '';
+            res.tags.forEach(t => {
+                const div = document.createElement('div');
+                div.className = 'tag-list-item';
+                const labelStr = t.visibility === 'group' ? `<small class="muted">(团队)</small>` : '';
+                div.innerHTML = `
+                    <span><strong>#${t.name}</strong> ${labelStr}</span>
+                    <span>
+                        <button class="btn-ghost btn-small" onclick="renameTag(${t.id}, '${t.name}')">重命名</button>
+                        <button class="btn-ghost btn-small" style="color:red; border-color:red;" onclick="deleteTag(${t.id})">删除</button>
+                    </span>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        let renamingTagId = null;
+
+        async function renameTag(id, name) {
+            renamingTagId = id;
+            document.getElementById('renameTagNameInput').value = name;
+            document.getElementById('renameTagModal').style.display = 'flex';
+        }
+
+        function closeRenameTagModal() {
+            document.getElementById('renameTagModal').style.display = 'none';
+        }
+
+        async function saveTagName() {
+            const newName = document.getElementById('renameTagNameInput').value;
+            if (newName) {
+                const res = await apiCall(`/api/tags/${renamingTagId}`, 'PUT', { name: newName });
+                if (res && res.status === 'success') {
+                    closeRenameTagModal();
+                    await loadTagsList();
+                    render(currentType, currentQuery, currentPage);
+                }
+            }
+        }
+
+        async function deleteTag(id) {
+            if (!confirm('确定要彻底删除这个标签吗？所有关联的情报将不再拥有此标签。')) return;
+            const res = await apiCall(`/api/tags/${id}`, 'DELETE');
+            if (res && res.status === 'success') {
+                await loadTagsList();
+                render(currentType, currentQuery, currentPage);
+            }
+        }
+
+        function changePage(delta) { render(currentType, currentQuery, currentPage + delta); }
+
+        async function revectorizeAll() {
+            if (!confirm('这将消耗大量 API 额度，确定吗？')) return;
+            const res = await apiCall('/api/revectorize_all', 'POST');
+            if (res && res.status === 'success') {
+                alert('任务已启动，请稍后查看效果。');
+            } else {
+                alert('操作失败，请检查后端日志。');
+            }
+        }
+
+        window.onload = async () => {
+            if (!authToken) {
+                window.location.href = '/login';
+                return;
+            }
+            onVisibilityChange();
+            await loadMe();
+            await loadGroups();
+            const params = new URLSearchParams(window.location.search);
+            render(params.get('type') || 'all', params.get('q') || '', parseInt(params.get('page')) || 1);
+        };
+    </script>
+</body>
+</html>

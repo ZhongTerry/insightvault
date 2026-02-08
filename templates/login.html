@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 登录</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.85);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 15% 20%, rgba(247, 108, 79, 0.18), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 56px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 48px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 28px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .panel {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 20px;
+            padding: 36px;
+            box-shadow: 0 20px 50px rgba(14, 124, 123, 0.12);
+            backdrop-filter: blur(8px);
+            animation: rise 0.7s ease-out;
+        }
+        h1 { margin: 0 0 12px; font-size: 34px; }
+        .muted { color: var(--muted); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-top: 24px; }
+        label { display: block; font-weight: 600; margin: 8px 0 6px; }
+        input {
+            width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+            font-size: 14px; background: #fff; outline: none;
+        }
+        button {
+            padding: 12px 18px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer; margin-top: 12px;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-accent { background: var(--accent); color: #fff; }
+        .hint { font-size: 13px; color: var(--muted); margin-top: 8px; }
+        @keyframes rise { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
+        @media (max-width: 700px) {
+            .panel { padding: 28px; }
+            h1 { font-size: 28px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div class="brand">InsightVault</div>
+            <div class="nav-links">
+                <a href="/">首页</a>
+                <a href="/app">进入应用</a>
+                <a href="/groups">团队</a>
+            </div>
+        </div>
+
+        <section class="panel">
+            <h1>登录或注册</h1>
+            <p class="muted">用账号解锁个人与团队的情报空间。</p>
+            <div class="grid">
+                <div>
+                    <h3>登录</h3>
+                    <label>邮箱</label>
+                    <input id="loginEmail" placeholder="you@example.com">
+                    <label>密码</label>
+                    <input id="loginPassword" type="password" placeholder="••••••••">
+                    <button class="btn-primary" onclick="login()">登录</button>
+                </div>
+                <div>
+                    <h3>注册</h3>
+                    <label>昵称</label>
+                    <input id="registerName" placeholder="可选">
+                    <label>邮箱</label>
+                    <input id="registerEmail" placeholder="you@example.com">
+                    <label>密码</label>
+                    <input id="registerPassword" type="password" placeholder="至少 8 位">
+                    <label>邀请码</label>
+                    <input id="registerInvite" placeholder="加入团队可选">
+                    <button class="btn-accent" onclick="registerUser()">注册</button>
+                    <div class="hint">注册后可使用邀请码加入团队</div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const options = { method };
+            if (body) {
+                options.headers = { 'Content-Type': 'application/json' };
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch(endpoint, options);
+            return await res.json();
+        }
+
+        function setAuth(token, user) {
+            authToken = token;
+            localStorage.setItem('authToken', token);
+            localStorage.setItem('authUser', JSON.stringify(user));
+        }
+
+        async function login() {
+            const email = document.getElementById('loginEmail').value.trim();
+            const password = document.getElementById('loginPassword').value;
+            if (!email || !password) return alert('请输入邮箱和密码');
+            const res = await apiCall('/api/auth/login', 'POST', { email, password });
+            if (res.token) {
+                setAuth(res.token, res.user);
+                window.location.href = '/app';
+            } else {
+                alert('登录失败');
+            }
+        }
+
+        async function registerUser() {
+            const name = document.getElementById('registerName').value.trim();
+            const email = document.getElementById('registerEmail').value.trim();
+            const password = document.getElementById('registerPassword').value;
+            const invite_code = document.getElementById('registerInvite').value.trim();
+            if (!email || !password) return alert('请输入邮箱和密码');
+            const res = await apiCall('/api/auth/register', 'POST', { name, email, password, invite_code });
+            if (res.token) {
+                setAuth(res.token, res.user);
+                window.location.href = '/app';
+            } else {
+                alert('注册失败');
+            }
+        }
+
+        async function tryAutoLogin() {
+            if (!authToken) return;
+            const res = await fetch('/api/auth/me', { headers: { Authorization: `Bearer ${authToken}` } });
+            if (res.status === 200) {
+                window.location.href = '/app';
+            } else {
+                localStorage.removeItem('authToken');
+            }
+        }
+
+        window.onload = () => {
+            tryAutoLogin();
+        };
+    </script>
+</body>
+</html>
