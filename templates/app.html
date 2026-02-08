@@ -148,6 +148,7 @@
                     <option value="item_entry">条目填充模板</option>
                     <option value="book_note">读书笔记模板</option>
                     <option value="meeting_record">会议记录模板</option>
+                    <option value="problem_record">错题记录模板</option>
                 </select>
             </div>
             <div id="freeInputArea" class="row">
@@ -284,6 +285,16 @@
                     { key: 'action_items', label: '行动项', type: 'textarea', placeholder: '待办事项和责任人' }
                 ],
                 format: (data) => `会议主题：${data.meeting_title}\n日期：${data.date}\n参会人员：${data.participants}\n\n会议要点：\n${data.summary}\n\n行动项：\n${data.action_items}`
+            },
+            problem_record: {
+                name: '错题记录模板',
+                fields: [
+                    { key: 'subject', label: '科目/领域', type: 'input', placeholder: '如：数学、前端、后端等' },
+                    { key: 'question', label: '题目描述', type: 'textarea', placeholder: '详细记录错题内容' },
+                    { key: 'wrong_reason', label: '错误原因', type: 'input', placeholder: '如：概念不清、粗心、逻辑错误等' },
+                    { key: 'solution', label: '解析与总结', type: 'textarea', placeholder: '正确解法、相关知识点及避坑指南' }
+                ],
+                format: (data) => `【错题本】\n科目：${data.subject}\n\n题目：\n${data.question}\n\n错误原因：${data.wrong_reason}\n\n解析总结：\n${data.solution}`
             }
         };
 
