@@ -182,7 +182,11 @@
                 <button class="btn-accent" onclick="doSearch('key')">关键词</button>
                 <button class="btn-ghost" onclick="doSearch('tag')">标签</button>
                 <button class="btn-ghost" onclick="doSearch('all')">全部</button>
-                <button id="revectorizeBtn" class="btn-ghost" onclick="revectorizeAll()">重构向量</button>
+            </div>
+            <div class="row" style="margin-top: 8px;">
+                <button class="btn-ghost btn-small" onclick="toggleShowArchived()"><span id="archiveToggleText">📦 显示归档</span></button>
+                <button class="btn-ghost btn-small" onclick="toggleFavoritedOnly()"><span id="favoriteToggleText">⭐ 仅看收藏</span></button>
+                <button id="revectorizeBtn" class="btn-ghost btn-small" onclick="revectorizeAll()">重构向量</button>
             </div>
         </div>
 
@@ -225,6 +229,8 @@
         let currentPage = 1;
         let currentType = 'all';
         let currentQuery = '';
+        let currentShowArchived = false;
+        let currentFavoritedOnly = false;
         let authToken = localStorage.getItem('authToken') || '';
         let currentUser = null;
         let currentGroups = [];
@@ -457,7 +463,9 @@
             currentPage = page;
 
             document.getElementById('loader').style.display = 'block';
-            const res = await apiCall(`/api/v1/items?type=${type}&q=${encodeURIComponent(q)}&page=${page}&per_page=10`);
+            const showArchivedParam = currentShowArchived ? 'true' : 'false';
+            const favoritedOnlyParam = currentFavoritedOnly ? 'true' : 'false';
+            const res = await apiCall(`/api/v1/items?type=${type}&q=${encodeURIComponent(q)}&page=${page}&per_page=10&show_archived=${showArchivedParam}&favorited_only=${favoritedOnlyParam}`);
             const container = document.getElementById('results');
             document.getElementById('loader').style.display = 'none';
 
@@ -486,15 +494,19 @@
                 itemEl.style.cursor = 'pointer';
                 itemEl.onclick = () => viewDetail(item.id);
                 
+                const favoriteIcon = item.is_favorited ? '⭐ ' : '';
+                const archivedBadge = item.is_archived ? '<span class="tag" style="background: var(--muted); color: white;">📦 已归档</span>' : '';
+                
                 // 创建结构
                 itemEl.innerHTML = `
-                    <div class="item-title" style="font-weight: 600; font-size: 16px; margin-bottom: 8px;"></div>
+                    <div class="item-title" style="font-weight: 600; font-size: 16px; margin-bottom: 8px;">${favoriteIcon}<span class="title-text"></span></div>
                     <div class="item-preview" style="color: var(--muted); margin-bottom: 8px;"></div>
                     <div class="item-meta" style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span>${createdAt}</span>
                             ${scoreStr}
                             ${statusStr}
+                            ${archivedBadge}
                         </div>
                         <div style="display: flex; align-items: center; gap: 8px;">
                             <span class="vis-pill"></span>
@@ -504,7 +516,10 @@
                 `;
                 
                 // 填充纯文本内容（防XSS）
-                itemEl.querySelector('.item-title').textContent = item.title || '无标题';
+                const titleElem = itemEl.querySelector('.title-text');
+                if (titleElem) {
+                    titleElem.textContent = item.title || '无标题';
+                }
                 itemEl.querySelector('.item-preview').textContent = (item.content_preview || item.content || '') + '...';
                 
                 // 填充可见性
@@ -537,6 +552,20 @@
         function doSearch(type) {
             if (type === 'all') document.getElementById('searchInput').value = '';
             render(type, document.getElementById('searchInput').value, 1);
+        }
+
+        function toggleShowArchived() {
+            currentShowArchived = !currentShowArchived;
+            const btn = document.getElementById('archiveToggleText');
+            btn.textContent = currentShowArchived ? '📦 隐藏归档' : '📦 显示归档';
+            render(currentType, currentQuery, 1);
+        }
+
+        function toggleFavoritedOnly() {
+            currentFavoritedOnly = !currentFavoritedOnly;
+            const btn = document.getElementById('favoriteToggleText');
+            btn.textContent = currentFavoritedOnly ? '⭐ 显示全部' : '⭐ 仅看收藏';
+            render(currentType, currentQuery, 1);
         }
 
         async function addData() {
@@ -651,12 +680,13 @@
         function changePage(delta) { render(currentType, currentQuery, currentPage + delta); }
 
         async function revectorizeAll() {
-            if (!confirm('这将消耗大量 API 额度，确定吗？')) return;
-            const res = await apiCall('/api/revectorize_all', 'POST');
+            if (!confirm('这将消耗大量 API 额度来重新构建全量向量，确定吗？')) return;
+            const res = await apiCall('/api/v1/admin/revectorize-all', 'POST');
             if (res && res.status === 'success') {
-                alert('任务已启动，请稍后查看效果。');
+                alert('后台重构任务已启动，请稍后刷新。');
+                render(currentType, currentQuery, currentPage);
             } else {
-                alert('操作失败，请检查后端日志。');
+                alert('操作失败，可能权限不足。');
             }
         }
 

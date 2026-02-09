@@ -258,6 +258,8 @@ async def lifespan(app: FastAPI):
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private';")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES groups(id);")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS vectorization_status VARCHAR(20) DEFAULT 'pending';")
+            await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS is_favorited BOOLEAN DEFAULT FALSE;")
             await conn.execute("UPDATE intelligence_vault SET visibility = 'private' WHERE visibility IS NULL;")
             # 修正状态迁移逻辑：如果有向量但状态还是 pending，则改为 success
             await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'success' WHERE embedding IS NOT NULL AND (vectorization_status IS NULL OR vectorization_status = 'pending');")
@@ -291,6 +293,8 @@ async def lifespan(app: FastAPI):
             await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS has_content BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS is_favorited BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS tags TEXT[];")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_owner ON reading_list (owner_user_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_created ON reading_list (created_at DESC);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_status ON reading_list (owner_user_id, is_read, is_archived);")
@@ -528,116 +532,6 @@ async def set_item_tags(
                         "INSERT INTO item_tags (item_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                         (item_id, row["id"])
                     )
-
-PER_PAGE = 10
-
-async def fetch_data(
-    pool: AsyncConnectionPool,
-    user_id: int,
-    group_ids: List[int],
-    search_type: str = 'all',
-    query: str = '',
-    page: int = 1
-):
-    offset = (page - 1) * PER_PAGE
-    results = []
-    
-    # 步骤 A: 获取向量
-    query_vec = None
-    if search_type == 'ai' and query:
-        query_vec = await get_embedding(query)
-        if query_vec:
-            logger.info(f"AI 搜索向量维度: {len(query_vec)}")
-
-    # 步骤 B: 数据库操作
-    with Profiler() as p_db:
-        async with pool.connection() as conn:
-            async with conn.cursor(row_factory=dict_row) as cur:
-                access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
-                if search_type == 'ai' and query_vec:
-                    # 显式使用 [..]::vector 进行类型转换，确保 pgvector 正确识别
-                    await cur.execute("""
-                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
-                               g.name AS group_name,
-                               ARRAY(
-                                   SELECT t.name
-                                   FROM item_tags it
-                                   JOIN tags t ON t.id = it.tag_id
-                                   WHERE it.item_id = iv.id
-                                   ORDER BY t.name
-                               ) AS tags,
-                               1 - (iv.embedding <=> %s::vector) AS score
-                        FROM intelligence_vault iv
-                        LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE """ + access_sql + """
-                        ORDER BY score DESC LIMIT %s OFFSET %s
-                    """, (json.dumps(query_vec), user_id, group_ids, PER_PAGE, offset))
-                elif search_type == 'key' and query:
-                    await cur.execute("""
-                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
-                               g.name AS group_name,
-                               ARRAY(
-                                   SELECT t.name
-                                   FROM item_tags it
-                                   JOIN tags t ON t.id = it.tag_id
-                                   WHERE it.item_id = iv.id
-                                   ORDER BY t.name
-                               ) AS tags
-                        FROM intelligence_vault iv
-                        LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + """
-                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
-                    """, (f'%{query}%', f'%{query}%', user_id, group_ids, PER_PAGE, offset))
-                elif search_type == 'tag' and query:
-                    tag = query.strip().lower()
-                    await cur.execute("""
-                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
-                               g.name AS group_name,
-                               ARRAY(
-                                   SELECT t.name
-                                   FROM item_tags it
-                                   JOIN tags t ON t.id = it.tag_id
-                                   WHERE it.item_id = iv.id
-                                   ORDER BY t.name
-                               ) AS tags
-                        FROM intelligence_vault iv
-                        LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE """ + access_sql + """ AND EXISTS (
-                            SELECT 1
-                            FROM item_tags it
-                            JOIN tags t ON t.id = it.tag_id
-                            WHERE it.item_id = iv.id AND t.name = %s
-                        )
-                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
-                    """, (user_id, group_ids, tag, PER_PAGE, offset))
-                else:
-                    await cur.execute("""
-                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
-                               g.name AS group_name,
-                               ARRAY(
-                                   SELECT t.name
-                                   FROM item_tags it
-                                   JOIN tags t ON t.id = it.tag_id
-                                   WHERE it.item_id = iv.id
-                                   ORDER BY t.name
-                               ) AS tags
-                        FROM intelligence_vault iv
-                        LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE """ + access_sql + """
-                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
-                    """, (user_id, group_ids, PER_PAGE, offset))
-                
-                rows = await cur.fetchall()
-                # 显式转换为 dict 列表
-                results = [dict(row) for row in rows]
-    
-    logger.info(f"SQL 查询完成 | 模式: {search_type} | 耗时: {p_db.duration:.2f}ms | 数量: {len(results)}")
-    
-    # 时间格式化
-    for r in results:
-        if isinstance(r['created_at'], datetime):
-            r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M')
-    return results
 
 # --- 4. 鉴权与用户组 ---
 
@@ -952,137 +846,6 @@ async def detail_page(request: Request):
 async def reading_page(request: Request):
     return templates.TemplateResponse("reading.html", {"request": request})
 
-@app.get("/api/search")
-async def api_search(request: Request, type: str = 'all', q: str = '', page: int = 1, user: dict = Depends(get_current_user)):
-    with Profiler() as p_total:
-        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
-        results = await fetch_data(request.app.state.db_pool, user["id"], list(group_roles.keys()), type, q, page)
-    logger.info(f">>> 搜索请求总响应时间: {p_total.duration:.2f}ms")
-    return results
-
-@app.post("/api/add")
-async def api_add(request: Request, background_tasks: BackgroundTasks, data: dict, user: dict = Depends(get_current_user)):
-    with Profiler() as p_total:
-        content = data.get('content')
-        visibility = (data.get("visibility") or "private").strip()
-        group_id = data.get("group_id")
-        tags_input = data.get("tags")
-        if not content:
-            raise HTTPException(status_code=400, detail="Content is required")
-        if visibility not in ("private", "group"):
-            raise HTTPException(status_code=400, detail="Visibility must be private or group")
-
-        if visibility == "group":
-            if not group_id:
-                raise HTTPException(status_code=400, detail="group_id is required for group visibility")
-            group_id = int(group_id)
-            group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
-            if group_id not in group_roles:
-                raise HTTPException(status_code=403, detail="Not a member of the group")
-        else:
-            group_id = None
-        
-        tags = normalize_tags(tags_input)
-        
-        with Profiler() as p_db:
-            # 先插入数据（embedding 为 NULL）
-            async with request.app.state.db_pool.connection() as conn:
-                async with conn.cursor(row_factory=dict_row) as cur:
-                    await cur.execute(
-                        """
-                        INSERT INTO intelligence_vault (content, embedding, owner_user_id, visibility, group_id)
-                        VALUES (%s, NULL, %s, %s, %s)
-                        RETURNING id
-                        """,
-                        (content, user["id"], visibility, group_id)
-                    )
-                    row = await cur.fetchone()
-                    item_id = row["id"]
-
-            await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
-        
-        # 启动后台向量化任务
-        background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, content)
-        
-        logger.info(f"DB 写入完成 | 耗时: {p_db.duration:.2f}ms")
-    logger.info(f">>> 录入请求总响应时间: {p_total.duration:.2f}ms")
-    return {"status": "success"}
-
-@app.delete("/api/delete/{item_id}")
-async def api_delete(request: Request, item_id: int, user: dict = Depends(get_current_user)):
-    async with request.app.state.db_pool.connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT id, owner_user_id, visibility, group_id FROM intelligence_vault WHERE id = %s",
-                (item_id,)
-            )
-            item = await cur.fetchone()
-            if not item:
-                raise HTTPException(status_code=404, detail="Item not found")
-
-            if item["owner_user_id"] != user["id"]:
-                allowed = False
-                if item["visibility"] == "group" and item["group_id"]:
-                    allowed = await is_group_admin(request.app.state.db_pool, user["id"], item["group_id"])
-                if not allowed:
-                    raise HTTPException(status_code=403, detail="No permission to delete")
-
-            await cur.execute("DELETE FROM intelligence_vault WHERE id = %s", (item_id,))
-    return {"status": "success"}
-
-@app.put("/api/update/{item_id}")
-async def api_update(request: Request, background_tasks: BackgroundTasks, item_id: int, data: dict, user: dict = Depends(get_current_user)):
-    new_content = data.get('content')
-    visibility = (data.get("visibility") or "private").strip()
-    group_id = data.get("group_id")
-    tags_input = data.get("tags", None)
-
-    if not new_content:
-        raise HTTPException(status_code=400, detail="Content is required")
-    if visibility not in ("private", "group"):
-        raise HTTPException(status_code=400, detail="Visibility must be private or group")
-
-    async with request.app.state.db_pool.connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                "SELECT id, owner_user_id FROM intelligence_vault WHERE id = %s",
-                (item_id,)
-            )
-            item = await cur.fetchone()
-            if not item:
-                raise HTTPException(status_code=404, detail="Item not found")
-            if item["owner_user_id"] != user["id"]:
-                raise HTTPException(status_code=403, detail="No permission to update")
-
-            if visibility == "group":
-                if not group_id:
-                    raise HTTPException(status_code=400, detail="group_id is required for group visibility")
-                group_id = int(group_id)
-                group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
-                if group_id not in group_roles:
-                    raise HTTPException(status_code=403, detail="Not a member of the group")
-            else:
-                group_id = None
-
-            # 先更新数据（不更新 embedding）
-            await cur.execute(
-                """
-                UPDATE intelligence_vault
-                SET content = %s, visibility = %s, group_id = %s
-                WHERE id = %s
-                """,
-                (new_content, visibility, group_id, item_id)
-            )
-
-    if tags_input is not None:
-        tags = normalize_tags(tags_input)
-        await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
-    
-    # 启动后台向量化任务
-    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, new_content)
-    
-    return {"status": "success"}
-
 # 异步背景任务：向量化单个项目
 async def background_vectorize_item(pool: AsyncConnectionPool, item_id: int, text_to_vectorize: str):
     """后台任务：为单个情报项生成向量并更新数据库"""
@@ -1147,12 +910,16 @@ async def background_revectorize(pool: AsyncConnectionPool):
     except Exception as e:
         logger.error(f"后台批量更新失败: {e}")
 
-@app.post("/api/revectorize_all")
-async def api_revectorize_all(request: Request, background_tasks: BackgroundTasks, user: dict = Depends(get_current_user)):
-    await require_admin(user)
+@app.post("/api/v1/admin/revectorize-all")
+async def api_v1_revectorize_all(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(require_scope('admin'))
+):
+    """管理员工具：全量重新向量化"""
     # 立即返回，后台执行
     background_tasks.add_task(background_revectorize, request.app.state.db_pool)
-    return {"status": "success", "message": "Task started in background"}
+    return {"status": "success", "message": "Revectorization task started in background"}
 
 # --- REST API v1 (新版API with proper REST conventions) ---
 
@@ -1163,9 +930,11 @@ async def api_v1_list_items(
     q: str = '',
     page: int = 1,
     per_page: int = Query(default=10, le=100),
+    show_archived: bool = False,
+    favorited_only: bool = False,
     user: dict = Depends(require_scope('read'))
 ):
-    """列出情报项目（支持搜索和分页）"""
+    """列出情报项目（支持搜索、归档过滤和分页）"""
     with Profiler() as p_total:
         group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
         
@@ -1179,13 +948,15 @@ async def api_v1_list_items(
         async with request.app.state.db_pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+                archive_sql = "" if show_archived else " AND iv.is_archived = FALSE"
+                favorite_sql = " AND iv.is_favorited = TRUE" if favorited_only else ""
                 
                 if type == 'ai' and query_vec:
                     await cur.execute("""
                         SELECT iv.id, iv.title, 
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
-                               iv.vectorization_status,
+                               iv.vectorization_status, iv.is_archived, iv.is_favorited,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1196,7 +967,7 @@ async def api_v1_list_items(
                                1 - (iv.embedding <=> %s::vector) AS score
                         FROM intelligence_vault iv
                         LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE """ + access_sql + """
+                        WHERE """ + access_sql + archive_sql + favorite_sql + """
                         ORDER BY score DESC LIMIT %s OFFSET %s
                     """, (json.dumps(query_vec), user["id"], list(group_roles.keys()), per_page, offset))
                 elif type == 'key' and q:
@@ -1204,7 +975,7 @@ async def api_v1_list_items(
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
-                               iv.vectorization_status,
+                               iv.vectorization_status, iv.is_archived, iv.is_favorited,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1214,15 +985,15 @@ async def api_v1_list_items(
                                ) AS tags
                         FROM intelligence_vault iv
                         LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + """
-                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
+                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + archive_sql + favorite_sql + """
+                        ORDER BY iv.is_favorited DESC, iv.created_at DESC LIMIT %s OFFSET %s
                     """, (f'%{q}%', f'%{q}%', user["id"], list(group_roles.keys()), per_page, offset))
                 else:
                     await cur.execute("""
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
-                               iv.vectorization_status,
+                               iv.vectorization_status, iv.is_archived, iv.is_favorited,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1232,8 +1003,8 @@ async def api_v1_list_items(
                                ) AS tags
                         FROM intelligence_vault iv
                         LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE """ + access_sql + """
-                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
+                        WHERE """ + access_sql + archive_sql + favorite_sql + """
+                        ORDER BY iv.is_favorited DESC, iv.created_at DESC LIMIT %s OFFSET %s
                     """, (user["id"], list(group_roles.keys()), per_page, offset))
                 
                 rows = await cur.fetchall()
@@ -1265,7 +1036,7 @@ async def api_v1_get_item(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("""
                 SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
-                       iv.vectorization_status,
+                       iv.vectorization_status, iv.is_archived, iv.is_favorited,
                        iv.owner_user_id, u.name as owner_name,
                        g.name AS group_name,
                        ARRAY(
@@ -1438,6 +1209,46 @@ async def api_v1_delete_item(
     
     return {"status": "success"}
 
+@app.patch("/api/v1/items/{item_id}/status")
+async def api_v1_update_item_status(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """快速更新情报项目状态（归档、收藏等），不触发向量化"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, owner_user_id FROM intelligence_vault WHERE id = %s",
+                (item_id,)
+            )
+            item = await cur.fetchone()
+            if not item:
+                raise HTTPException(status_code=404, detail="Item not found")
+            if item["owner_user_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="No permission to update")
+            
+            updates = []
+            params = []
+            
+            if 'is_archived' in data:
+                updates.append("is_archived = %s")
+                params.append(bool(data['is_archived']))
+            
+            if 'is_favorited' in data:
+                updates.append("is_favorited = %s")
+                params.append(bool(data['is_favorited']))
+            
+            if updates:
+                params.append(item_id)
+                await cur.execute(
+                    f"UPDATE intelligence_vault SET {', '.join(updates)} WHERE id = %s",
+                    params
+                )
+    
+    return {"status": "success"}
+
 # --- Reading List API (稍后阅读) ---
 
 @app.post("/api/v1/reading-list")
@@ -1452,9 +1263,16 @@ async def api_v1_create_reading_item(
     content = (data.get('content') or '').strip()
     source = (data.get('source') or '').strip()
     cover_image = (data.get('cover_image') or '').strip()
+    tags = data.get('tags', [])
     
     if not title or not url:
         raise HTTPException(status_code=400, detail="Title and URL are required")
+    
+    # 标签处理
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(',') if t.strip()]
+    elif not isinstance(tags, list):
+        tags = []
     
     has_content = bool(content)
     
@@ -1462,11 +1280,11 @@ async def api_v1_create_reading_item(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                INSERT INTO reading_list (title, url, content, source, cover_image, has_content, owner_user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO reading_list (title, url, content, source, cover_image, has_content, tags, owner_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (title, url, content or None, source or None, cover_image or None, has_content, user["id"])
+                (title, url, content or None, source or None, cover_image or None, has_content, tags, user["id"])
             )
             row = await cur.fetchone()
             item_id = row["id"]
@@ -1500,9 +1318,9 @@ async def api_v1_list_reading_items(
             
             await cur.execute(
                 f"""
-                SELECT id, title, url, source, cover_image, has_content, is_read, is_archived, created_at
+                SELECT id, title, url, source, cover_image, has_content, is_read, is_archived, is_favorited, tags, created_at
                 {base_query}
-                ORDER BY created_at DESC
+                ORDER BY is_favorited DESC, created_at DESC
                 LIMIT %s OFFSET %s
                 """,
                 params + [per_page, offset]
@@ -1579,6 +1397,19 @@ async def api_v1_update_reading_item(
             if 'is_archived' in data:
                 updates.append("is_archived = %s")
                 params.append(bool(data['is_archived']))
+            
+            if 'is_favorited' in data:
+                updates.append("is_favorited = %s")
+                params.append(bool(data['is_favorited']))
+            
+            if 'tags' in data:
+                tags = data['tags']
+                if isinstance(tags, str):
+                    tags = [t.strip() for t in tags.split(',') if t.strip()]
+                elif not isinstance(tags, list):
+                    tags = []
+                updates.append("tags = %s")
+                params.append(tags)
             
             if updates:
                 updates.append("updated_at = CURRENT_TIMESTAMP")

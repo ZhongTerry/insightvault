@@ -36,8 +36,9 @@
             padding: 0;
         }
         .sidebar {
-            width: 380px;
-            background: var(--card);
+            width: 420px;
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(10px);
             border-right: 1px solid var(--line);
             display: flex;
             flex-direction: column;
@@ -94,21 +95,22 @@
             padding: 12px;
         }
         .list-item {
-            background: #fff;
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            padding: 14px;
-            margin-bottom: 10px;
+            background: transparent;
+            border: none;
+            border-left: 3px solid transparent;
+            border-radius: 0;
+            padding: 14px 16px;
+            margin-bottom: 2px;
             cursor: pointer;
             transition: all 0.2s;
         }
         .list-item:hover {
-            box-shadow: 0 4px 12px rgba(14, 124, 123, 0.1);
-            transform: translateY(-1px);
+            background: rgba(255, 255, 255, 0.6);
+            border-left-color: var(--primary);
         }
         .list-item.active {
-            border-color: var(--primary);
-            background: #f0faf9;
+            border-left-color: var(--primary);
+            background: rgba(14, 124, 123, 0.08);
         }
         .list-item-title {
             font-weight: 600;
@@ -146,7 +148,8 @@
         .content-header {
             padding: 20px 32px;
             border-bottom: 1px solid var(--line);
-            background: var(--card);
+            background: rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(10px);
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -167,7 +170,7 @@
         .content-body {
             flex: 1;
             overflow-y: auto;
-            padding: 32px;
+            padding: 48px 64px;
         }
         .empty-state {
             text-align: center;
@@ -200,7 +203,7 @@
             text-decoration: none;
         }
         .article-content {
-            max-width: 800px;
+            max-width: 900px;
             line-height: 1.8;
             font-size: 16px;
         }
@@ -250,6 +253,15 @@
             cursor: pointer;
             font-size: 13px;
             transition: all 0.2s;
+            font-family: inherit;
+        }
+        .btn-link {
+            background: transparent;
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .btn-link:hover {
+            background: rgba(14, 124, 123, 0.1);
         }
         .btn-primary {
             background: var(--primary);
@@ -442,6 +454,10 @@
                 const badges = [];
                 if (item.is_read) badges.push('<span class="badge badge-read">已读</span>');
                 if (!item.has_content) badges.push('<span class="badge">仅链接</span>');
+                if (item.is_favorited) badges.push('<span style="color: gold; font-size: 14px;">⭐</span>');
+                
+                // 标签显示
+                const tagsHtml = (item.tags || []).map(tag => `<span class="badge">#${tag}</span>`).join(' ');
                 
                 div.innerHTML = `
                     <div class="list-item-title"></div>
@@ -449,6 +465,7 @@
                         <span>${item.source || new URL(item.url).hostname}</span>
                         <span>${createdAt}</span>
                         ${badges.join('')}
+                        ${tagsHtml}
                     </div>
                 `;
                 
@@ -511,7 +528,10 @@
                 contentBody.querySelector('.article-title').textContent = currentItem.title;
                 
                 articleActions.innerHTML = `
+                    <button class="btn-link" onclick="window.open('${currentItem.url}', '_blank')" title="在新标签页打开原文">🔗 打开原文</button>
+                    <button class="btn-primary" onclick="toggleFavorite()" title="收藏">${currentItem.is_favorited ? '⭐' : '☆'} 收藏</button>
                     <button class="btn-primary" onclick="toggleRead()">标记为<span id="readToggleText">${currentItem.is_read ? '未读' : '已读'}</span></button>
+                    <button class="btn-ghost" onclick="toggleArchive()">${currentItem.is_archived ? '取消归档' : '归档'}</button>
                     <button class="btn-ghost" onclick="saveToVault()">保存到情报库</button>
                     <button class="btn-accent" onclick="deleteReading()">删除</button>
                 `;
@@ -533,6 +553,46 @@
             showToast(newReadStatus ? '已标记为已读' : '已标记为未读');
             
             await loadList();
+        }
+
+        async function toggleFavorite() {
+            if (!currentItem) return;
+            
+            const newStatus = !currentItem.is_favorited;
+            await apiCall(`/api/v1/reading-list/${currentItem.id}`, 'PUT', {
+                is_favorited: newStatus
+            });
+            
+            currentItem.is_favorited = newStatus;
+            showToast(newStatus ? '已添加到收藏' : '已取消收藏');
+            
+            // 重新加载按钮
+            await viewArticle(currentItem.id);
+        }
+
+        async function toggleArchive() {
+            if (!currentItem) return;
+            
+            const newStatus = !currentItem.is_archived;
+            await apiCall(`/api/v1/reading-list/${currentItem.id}`, 'PUT', {
+                is_archived: newStatus
+            });
+            
+            showToast(newStatus ? '已归档' : '已取消归档');
+            await loadList();
+            
+            // 如果归档了，清空右侧显示
+            if (newStatus) {
+                document.getElementById('contentBody').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📦</div>
+                        <h2 style="margin: 16px 0; color: var(--ink);">已归档</h2>
+                        <p>该文章已移至归档，请切换到“已归档”筛选查看。</p>
+                    </div>
+                `;
+                document.getElementById('articleActions').style.display = 'none';
+                currentItem = null;
+            }
         }
 
         async function saveToVault() {

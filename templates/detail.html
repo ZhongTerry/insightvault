@@ -221,6 +221,8 @@
             <div class="card">
                 <div class="actions">
                     <button class="btn-primary" onclick="switchToEditMode()">编辑</button>
+                    <button class="btn-accent btn-small" id="favoriteBtn" onclick="toggleFavorite()">⭐ 收藏</button>
+                    <button class="btn-ghost btn-small" id="archiveBtn" onclick="toggleArchive()">📦 归档</button>
                     <button class="btn-danger" onclick="deleteItem()">删除</button>
                     <button class="btn-ghost" onclick="goBack()">返回</button>
                 </div>
@@ -335,13 +337,22 @@
                 }
 
                 const tags = (currentItem.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ');
+                const favoriteIcon = currentItem.is_favorited ? '⭐ ' : '';
+                const archivedBadge = currentItem.is_archived ? '<span class="tag" style="background: var(--muted); color: white;">📦 已归档</span>' : '';
                 metaEl.innerHTML = `
                     <span>创建于: ${createdAt}</span>
                     <span>作者: ${currentItem.owner_name || '未知'}</span>
                     ${visTag}
                     ${statusHtml}
+                    ${archivedBadge}
                     ${tags}
                 `;
+                
+                // 更新标题显示收藏状态
+                titleEl.textContent = (favoriteIcon ? favoriteIcon : '') + (currentItem.title || '无标题');
+                
+                // 更新按钮文本
+                updateActionButtons();
                 
                 // 渲染Markdown内容并清理XSS
                 const contentEl = document.getElementById('itemContent');
@@ -412,6 +423,60 @@
                 }
             } catch (error) {
                 showToast('删除失败: ' + error.message);
+            }
+        }
+
+        function updateActionButtons() {
+            if (!currentItem) return;
+            
+            const favoriteBtn = document.getElementById('favoriteBtn');
+            const archiveBtn = document.getElementById('archiveBtn');
+            
+            if (favoriteBtn) {
+                favoriteBtn.textContent = currentItem.is_favorited ? '⭐ 取消收藏' : '⭐ 收藏';
+                favoriteBtn.className = currentItem.is_favorited ? 'btn-accent btn-small' : 'btn-ghost btn-small';
+            }
+            
+            if (archiveBtn) {
+                archiveBtn.textContent = currentItem.is_archived ? '📦 取消归档' : '📦 归档';
+            }
+        }
+
+        async function toggleFavorite() {
+            if (!currentItem) return;
+            
+            try {
+                const newStatus = !currentItem.is_favorited;
+                const res = await apiCall(`/api/v1/items/${itemId}/status`, 'PATCH', {
+                    is_favorited: newStatus
+                });
+                
+                if (res && res.status === 'success') {
+                    currentItem.is_favorited = newStatus;
+                    showToast(newStatus ? '⭐ 已收藏' : '已取消收藏');
+                    await loadItem();
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message);
+            }
+        }
+
+        async function toggleArchive() {
+            if (!currentItem) return;
+            
+            try {
+                const newStatus = !currentItem.is_archived;
+                const res = await apiCall(`/api/v1/items/${itemId}/status`, 'PATCH', {
+                    is_archived: newStatus
+                });
+                
+                if (res && res.status === 'success') {
+                    currentItem.is_archived = newStatus;
+                    showToast(newStatus ? '📦 已归档' : '已取消归档');
+                    await loadItem();
+                }
+            } catch (error) {
+                showToast('操作失败: ' + error.message);
             }
         }
 
