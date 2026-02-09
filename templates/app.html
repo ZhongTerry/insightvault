@@ -490,12 +490,16 @@
                 itemEl.innerHTML = `
                     <div class="item-title" style="font-weight: 600; font-size: 16px; margin-bottom: 8px;"></div>
                     <div class="item-preview" style="color: var(--muted); margin-bottom: 8px;"></div>
-                    <div class="item-meta" style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                        <span>${createdAt}</span>
-                        ${scoreStr}
-                        ${statusStr}
-                        <span class="vis-pill"></span>
-                        <span class="tags-container"></span>
+                    <div class="item-meta" style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span>${createdAt}</span>
+                            ${scoreStr}
+                            ${statusStr}
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span class="vis-pill"></span>
+                            <span class="tags-container"></span>
+                        </div>
                     </div>
                 `;
                 

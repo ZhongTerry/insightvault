@@ -259,8 +259,9 @@ async def lifespan(app: FastAPI):
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES groups(id);")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS vectorization_status VARCHAR(20) DEFAULT 'pending';")
             await conn.execute("UPDATE intelligence_vault SET visibility = 'private' WHERE visibility IS NULL;")
-            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'success' WHERE vectorization_status IS NULL AND embedding IS NOT NULL;")
-            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'pending' WHERE vectorization_status IS NULL AND embedding IS NULL;")
+            # 修正状态迁移逻辑：如果有向量但状态还是 pending，则改为 success
+            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'success' WHERE embedding IS NOT NULL AND (vectorization_status IS NULL OR vectorization_status = 'pending');")
+            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'pending' WHERE embedding IS NULL AND vectorization_status IS NULL;")
 
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_iv_owner ON intelligence_vault (owner_user_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_iv_group ON intelligence_vault (group_id);")
