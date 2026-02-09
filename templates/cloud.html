@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 云盘</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.95);
+            --line: rgba(20, 20, 20, 0.06);
+            --glass: rgba(255, 255, 255, 0.7);
+            --shadow: 0 8px 30px rgba(0,0,0,0.04);
+            --radius-lg: 20px;
+            --radius-md: 12px;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 12% 18%, rgba(247, 108, 79, 0.08), transparent 40%),
+                radial-gradient(circle at 80% 8%, rgba(14, 124, 123, 0.1), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .wrap { max-width: 1400px; margin: 0 auto; padding: 40px 24px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 32px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 28px; letter-spacing: 0.5px;
+            background: linear-gradient(45deg, var(--primary), var(--accent));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 18px; font-weight: 600;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--primary); }
+        .user-pill {
+            padding: 8px 14px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+            font-size: 13px; color: var(--muted); box-shadow: var(--shadow);
+        }
+        .layout {
+            display: grid;
+            grid-template-columns: 280px 1fr;
+            gap: 24px;
+        }
+        .sidebar {
+            background: var(--glass);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            padding: 24px;
+            backdrop-filter: blur(12px);
+            position: sticky; top: 40px;
+            height: calc(100vh - 120px);
+            display: flex; flex-direction: column;
+        }
+        .side-title { font-size: 13px; font-weight: 700; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+        .side-section { margin-bottom: 24px; }
+        .filter-btn {
+            width: 100%; text-align: left; padding: 12px 14px; border-radius: var(--radius-md);
+            border: none; background: transparent; font-weight: 600; cursor: pointer;
+            margin-bottom: 4px; display: flex; align-items: center; gap: 10px; color: var(--ink);
+            transition: all 0.2s;
+        }
+        .filter-btn i { width: 18px; text-align: center; font-size: 16px; opacity: 0.7; }
+        .filter-btn:hover { background: rgba(14, 124, 123, 0.05); }
+        .filter-btn.active { background: var(--primary); color: #fff; }
+        .filter-btn.active i { opacity: 1; }
+        
+        .main {
+            background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-lg);
+            padding: 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.03);
+            position: relative; transition: border-color 0.2s;
+        }
+        .main.drag-over { border-color: var(--primary); background: rgba(14, 124, 123, 0.02); }
+        .main.drag-over::after {
+            content: "释放以上传至当前目录"; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(14, 124, 123, 0.15); display: flex; align-items: center; justify-content: center;
+            font-size: 24px; font-weight: 700; color: var(--primary); z-index: 50; border-radius: var(--radius-lg);
+            pointer-events: none; backdrop-filter: blur(2px);
+        }
+
+        .toolbar { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 20px; align-items: center; }
+        .search { position: relative; flex: 1; max-width: 440px; }
+        .search i { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); color: var(--muted); z-index: 5; pointer-events: none; opacity: 0.6; }
+        .search input { padding-left: 44px; height: 44px; border-radius: 22px; box-shadow: 0 4px 12px rgba(0,0,0,0.02); }
+
+        .breadcrumbs { font-size: 14px; color: var(--muted); margin-bottom: 16px; display: flex; align-items: center; gap: 6px; }
+        .breadcrumbs i { font-size: 12px; }
+        .breadcrumbs span { cursor: pointer; padding: 4px 8px; border-radius: 6px; transition: background 0.2s; }
+        .breadcrumbs span:hover { background: var(--line); color: var(--ink); }
+
+        .list { min-height: 400px; }
+        .list-head, .list-item {
+            display: grid; grid-template-columns: 2fr 120px 180px 120px; gap: 16px;
+            padding: 14px 12px; align-items: center;
+        }
+        .list-head { font-size: 13px; color: var(--muted); font-weight: 700; border-bottom: 1px solid var(--line); }
+        .list-item {
+            border-bottom: 1px solid var(--line); border-radius: var(--radius-md); transition: all 0.2s;
+            cursor: pointer; user-select: none;
+        }
+        .list-item:hover { background: rgba(0,0,0,0.02); }
+        .list-item.dragging { opacity: 0.5; background: var(--line); }
+        .list-item.drag-over { background: rgba(14, 124, 123, 0.1); border-color: var(--primary); }
+        .list-item.selected { background: rgba(14, 124, 123, 0.05); border-left: 3px solid var(--primary); }
+
+        .item-name { display: flex; align-items: center; gap: 12px; font-weight: 600; overflow: hidden; }
+        .item-name i { font-size: 20px; width: 24px; text-align: center; }
+        .item-name .fa-folder { color: #fcc419; }
+        .item-name .fa-file-pdf { color: #fa5252; }
+        .item-name .fa-file-image { color: #40c057; }
+        .item-name .fa-file-word { color: #339af0; }
+        .item-name .name-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        
+        .item-meta { font-size: 13px; color: var(--muted); }
+        .pills { display: flex; gap: 4px; }
+        .pill { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+        .pill-favorited { background: #fff3bf; color: #f08c00; }
+        .pill-shared { background: #d3f9d8; color: #2b8a3e; }
+        .pill-archived { background: #e9ecef; color: #495057; }
+        .pill-group { background: #e7f5ff; color: #1971c2; }
+        
+        .actions-cell { text-align: right; }
+        .icon-btn {
+            background: transparent; border: none; font-size: 16px; color: var(--muted);
+            cursor: pointer; padding: 6px; border-radius: 6px; transition: all 0.2s;
+        }
+        .icon-btn:hover { background: var(--line); color: var(--ink); }
+
+        /* Context Menu */
+        .context-menu {
+            position: fixed; background: #fff; border: 1px solid var(--line); border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.12); z-index: 2000; width: 200px;
+            display: none; padding: 6px; backdrop-filter: blur(10px);
+        }
+        .context-menu-item {
+            padding: 10px 14px; display: flex; align-items: center; gap: 10px;
+            font-size: 14px; font-weight: 600; border-radius: 8px; cursor: pointer;
+            transition: background 0.2s;
+        }
+        .context-menu-item i { font-size: 14px; width: 16px; opacity: 0.7; }
+        .context-menu-item:hover { background: var(--bg-1); color: var(--primary); }
+        .context-menu-item.danger:hover { background: #fff5f5; color: #e03131; }
+        .context-menu-separator { height: 1px; background: var(--line); margin: 6px; }
+
+        input[type="text"], select {
+            width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-md);
+            font-size: 14px; background: #fff; outline: none; transition: border-color 0.2s;
+        }
+        input[type="text"]:focus, select:focus { border-color: var(--primary); }
+        button {
+            padding: 12px 18px; border-radius: var(--radius-md); border: none;
+            font-weight: 700; cursor: pointer; transition: all 0.2s;
+        }
+        .btn-primary { background: var(--primary); color: #fff; box-shadow: 0 4px 12px rgba(14, 124, 123, 0.2); }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(14, 124, 123, 0.3); }
+        .btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+        .btn-ghost:hover { background: var(--line); }
+
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center;
+            z-index: 3000; backdrop-filter: blur(4px);
+        }
+        .modal-card {
+            background: #fff; width: 92%; max-width: 500px; padding: 32px;
+            border-radius: 24px; box-shadow: 0 30px 100px rgba(0,0,0,0.2);
+        }
+        .ocr-preview-wrap {
+            width: 100%; aspect-ratio: 16/9; background: #f0f0f0; border-radius: 12px;
+            margin-bottom: 16px; overflow: hidden; display: flex; align-items: center; justify-content: center;
+            border: 1px dashed var(--line);
+        }
+        .ocr-preview-wrap img { max-width: 100%; max-height: 100%; }
+        .ocr-text {
+            background: #f8f9fa; border: 1px solid var(--line); border-radius: 12px;
+            padding: 16px; min-height: 160px; font-size: 14px; line-height: 1.6;
+            white-space: pre-wrap; color: var(--ink);
+        }
+
+        @media (max-width: 1000px) {
+            .layout { grid-template-columns: 1fr; }
+            .sidebar { position: static; height: auto; }
+            .list-head, .list-item { grid-template-columns: 1fr 80px 120px; }
+            .item-meta { display: none; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">云盘 · 文件管理与协作空间</div>
+            </div>
+            <div>
+                <span class="user-pill" id="userPill">未登录</span>
+                <span class="nav-links">
+                    <a href="/">首页</a>
+                    <a href="/app">情报库</a>
+                    <a href="/reading">稍后阅读</a>
+                    <a href="/groups">团队</a>
+                    <a href="/settings">设置</a>
+                    <a href="/admin" id="adminLink" style="display: none;">管理</a>
+                    <a href="/login" onclick="logout()">退出</a>
+                </span>
+            </div>
+        </div>
+
+        <div class="layout">
+            <aside class="sidebar">
+                <div class="side-section">
+                    <div class="side-title">视图</div>
+                    <button class="filter-btn active" data-filter="all" onclick="switchFilter('all')">
+                        <i class="fas fa-folder-open"></i> 全部文件
+                    </button>
+                    <button class="filter-btn" data-filter="favorites" onclick="switchFilter('favorites')">
+                        <i class="fas fa-star"></i> 收藏
+                    </button>
+                    <button class="filter-btn" data-filter="archived" onclick="switchFilter('archived')">
+                        <i class="fas fa-archive"></i> 归档
+                    </button>
+                    <button class="filter-btn" data-filter="shared" onclick="switchFilter('shared')">
+                        <i class="fas fa-link"></i> 共享链接
+                    </button>
+                </div>
+                
+                <div class="side-section">
+                    <div class="side-title">工具</div>
+                    <button class="filter-btn" id="side-ocr-btn" onclick="openClipboardOcr()">
+                        <i class="fas fa-magic"></i> 智能 OCR (剪贴板)
+                    </button>
+                    <button class="filter-btn" onclick="showToast('正在整理...')">
+                        <i class="fas fa-robot"></i> AI 智能整理
+                    </button>
+                </div>
+
+                <div class="side-section">
+                    <div class="side-title">可见范围</div>
+                    <select id="visibilitySelect" onchange="onVisibilityChange()" style="margin-bottom: 8px;">
+                        <option value="private">私有 (仅自己)</option>
+                        <option value="group">团队</option>
+                    </select>
+                    <select id="groupSelect" onchange="onVisibilityChange()" disabled>
+                        <option value="">选择团队...</option>
+                    </select>
+                </div>
+
+                <div style="flex: 1;"></div>
+
+                <div class="side-section" style="margin-bottom: 0;">
+                    <button class="btn-primary" style="width: 100%; margin-bottom: 10px;" onclick="triggerUpload()">
+                        <i class="fas fa-upload"></i> 上传文件
+                    </button>
+                    <button class="btn-ghost" style="width: 100%;" onclick="createFolder()">
+                        <i class="fas fa-folder-plus"></i> 新建文件夹
+                    </button>
+                </div>
+            </aside>
+
+            <main class="main" id="dropZone">
+                <div class="toolbar">
+                    <div class="search">
+                        <!-- <i class="fas fa-search"></i -->
+                        <input type="text" id="searchInput" placeholder="搜索文件或文件夹..." oninput="onSearchChange()">
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="icon-btn" title="整理建议（AI）" onclick="getAiSuggestions()"><i class="fas fa-magic"></i></button>
+                        <button class="icon-btn" title="刷新" onclick="refreshList()"><i class="fas fa-sync-alt"></i></button>
+                    </div>
+                </div>
+
+                <div class="breadcrumbs" id="breadcrumbs">
+                    <i class="fas fa-home"></i> <span>根目录</span>
+                </div>
+
+                <div class="list">
+                    <div class="list-head">
+                        <div>名称</div>
+                        <div>大小</div>
+                        <div>更新时间</div>
+                        <div style="text-align: right;">操作</div>
+                    </div>
+                    <div id="items"></div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Context Menu -->
+    <div id="contextMenu" class="context-menu">
+        <div id="cm-open" class="context-menu-item" onclick="handleCmCommand('open')">
+            <i class="fas fa-folder-open"></i> 打开
+        </div>
+        <div id="cm-download" class="context-menu-item" onclick="handleCmCommand('download')">
+            <i class="fas fa-download"></i> 下载
+        </div>
+        <div id="cm-ocr" class="context-menu-item" onclick="handleCmCommand('ocr')">
+            <i class="fas fa-expand"></i> OCR 识别
+        </div>
+        <div class="context-menu-separator"></div>
+        <div id="cm-share" class="context-menu-item" onclick="handleCmCommand('share')">
+            <i class="fas fa-share-alt"></i> 共享链接
+        </div>
+        <div id="cm-version" class="context-menu-item" onclick="handleCmCommand('version')">
+            <i class="fas fa-history"></i> 版本管理
+        </div>
+        <div id="cm-favorite" class="context-menu-item" onclick="handleCmCommand('favorite')">
+            <i class="fas fa-star"></i> 收藏 / 取消
+        </div>
+        <div class="context-menu-separator"></div>
+        <div id="cm-rename" class="context-menu-item" onclick="handleCmCommand('rename')">
+            <i class="fas fa-edit"></i> 重命名
+        </div>
+        <div id="cm-delete" class="context-menu-item danger" onclick="handleCmCommand('delete')">
+            <i class="fas fa-trash-alt"></i> 删除
+        </div>
+    </div>
+
+    <input type="file" id="fileInput" multiple style="display: none;" onchange="uploadFiles()">
+    <input type="file" id="versionInput" style="display: none;" onchange="uploadNewVersion()">
+
+    <div id="shareModal" class="modal-overlay">
+        <div class="modal-card">
+            <h3>共享链接</h3>
+            <div class="muted" style="margin-bottom: 10px;">可设置有效期和最大访问次数。</div>
+            <div style="display: grid; gap: 12px;">
+                <input type="text" id="shareHours" placeholder="有效期小时数（留空为永久）">
+                <input type="text" id="shareMaxUses" placeholder="最大访问次数（留空为无限）">
+            </div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+                <button class="btn-ghost" onclick="closeShareModal()">取消</button>
+                <button class="btn-primary" onclick="confirmShare()">生成链接</button>
+            </div>
+            <div id="shareResult" class="muted" style="margin-top: 14px;"></div>
+        </div>
+    </div>
+
+    <div id="ocrModal" class="modal-overlay">
+        <div class="modal-card" style="width: 800px; max-width: 90vw;">
+            <h3 style="margin-top: 0;"><i class="fas fa-expand"></i> 智能 OCR 助手</h3>
+            <div class="ocr-container" style="display: flex; gap: 20px; height: 500px;">
+                <div id="ocrPreviewWrap" class="ocr-preview-wrap" style="flex: 1; background: #f8f9fa; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px dashed var(--line);">
+                    <img id="ocrPreview" src="" alt="OCR Preview" style="max-width: 100%; max-height: 100%; display: none;">
+                    <div id="ocrPlaceholder" class="muted" style="text-align: center; padding: 20px;">
+                        <i class="fas fa-image" style="font-size: 40px; margin-bottom: 10px; display: block;"></i>
+                        可粘贴截图或从云端加载
+                    </div>
+                </div>
+                <div style="flex: 1; display: flex; flex-direction: column;">
+                    <div class="ocr-text" id="ocrTextResult" style="flex: 1; border: 1px solid var(--line); border-radius: 8px; padding: 16px; overflow-y: auto; background: #fff; line-height: 1.6; font-size: 14px;"></div>
+                </div>
+            </div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px;">
+                <button class="btn-ghost" onclick="closeOcrModal()">关闭</button>
+                <button id="ocrScanBtn" class="btn-primary" style="display: none;">开始识别</button>
+                <button class="btn-primary" onclick="copyOcrText()"><i class="fas fa-copy"></i> 复制文本</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="versionsModal" class="modal-overlay">
+        <div class="modal-card">
+            <h3>版本管理</h3>
+            <div id="versionsList" class="muted">正在加载...</div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+                <button class="btn-ghost" onclick="closeVersionsModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="pasteOverlay" class="modal-overlay">
+        <div class="modal-card">
+            <h3>剪贴板 OCR</h3>
+            <div class="muted" style="margin-bottom: 12px;">请直接粘贴图片 (Ctrl+V)，系统会自动识别。</div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end;">
+                <button class="btn-ghost" onclick="closePasteOcr()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let currentParentId = null;
+        let currentFilter = 'all';
+        let currentQuery = '';
+        let breadcrumb = [];
+        let shareTargetId = null;
+        let pasteOcrActive = false;
+        let versionTargetId = null;
+        let currentVisibility = 'private';
+        let currentGroupId = null;
+        let currentGroups = [];
+        let contextTargetItem = null;
+        let draggedItem = null;
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => {
+                t.style.opacity = '0';
+                setTimeout(() => t.remove(), 300);
+            }, 2200);
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null, isForm = false) {
+            try {
+                const options = { method };
+                if (body) {
+                    if (isForm) {
+                        options.body = body;
+                    } else {
+                        options.headers = { 'Content-Type': 'application/json' };
+                        options.body = JSON.stringify(body);
+                    }
+                }
+                if (authToken) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+                const res = await fetch(endpoint, options);
+                if (res.status === 401) {
+                    logout();
+                    window.location.href = '/login';
+                    return null;
+                }
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(errorText || `HTTP ${res.status}`);
+                }
+                return await res.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (!res || !res.user) return;
+            currentUser = res.user;
+            document.getElementById('userPill').innerText = currentUser.name || currentUser.email;
+            if (currentUser.role === 'admin') {
+                document.getElementById('adminLink').style.display = 'inline';
+            }
+        }
+
+        async function loadGroups() {
+            const res = await apiCall('/api/groups');
+            currentGroups = (res && res.groups) ? res.groups : [];
+            const select = document.getElementById('groupSelect');
+            select.innerHTML = '<option value="">选择团队...</option>';
+            currentGroups.forEach(g => {
+                const opt = document.createElement('option');
+                opt.value = g.group_id;
+                opt.textContent = `${g.name} (${g.role})`;
+                select.appendChild(opt);
+            });
+        }
+
+        function onVisibilityChange() {
+            const visibility = document.getElementById('visibilitySelect').value;
+            const groupSelect = document.getElementById('groupSelect');
+            groupSelect.disabled = visibility !== 'group';
+            currentVisibility = visibility;
+            currentGroupId = visibility === 'group' ? groupSelect.value || null : null;
+        }
+
+        function renderBreadcrumbs() {
+            const container = document.getElementById('breadcrumbs');
+            if (breadcrumb.length === 0) {
+                container.innerHTML = `<i class="fas fa-home"></i> <span>根目录</span>`;
+                return;
+            }
+            container.innerHTML = `<i class="fas fa-home"></i> <span onclick="goRoot()">根目录</span> ` + breadcrumb.map((b, idx) => {
+                return `<i class="fas fa-chevron-right"></i> <span onclick="goToCrumb(${idx})">${b.name}</span>`;
+            }).join(' ');
+        }
+
+        async function loadItems() {
+            const parentParam = currentParentId !== null ? `&parent_id=${currentParentId}` : '';
+            const queryParam = currentQuery ? `&q=${encodeURIComponent(currentQuery)}` : '';
+            const res = await apiCall(`/api/v1/cloud/items?filter_by=${currentFilter}${parentParam}${queryParam}`);
+            const container = document.getElementById('items');
+            if (!res || !res.data) {
+                container.innerHTML = '<div class="empty">加载失败</div>';
+                return;
+            }
+            const items = res.data;
+            container.innerHTML = '';
+
+            // 1. Add Parent Directory Item if deep
+            if (currentParentId !== null && !currentQuery) { // Only show in navigation mode
+                const upDiv = document.createElement('div');
+                upDiv.className = 'list-item';
+                upDiv.style.background = 'rgba(14, 124, 123, 0.03)';
+                upDiv.style.border = '1px dashed var(--primary)';
+                upDiv.innerHTML = `
+                    <div class="item-name" style="color: var(--primary);">
+                        <i class="fas fa-arrow-up"></i>
+                        <span class="name-text">.. 返回上级目录</span>
+                    </div>
+                    <div class="item-meta">-</div><div class="item-meta">-</div><div class="actions-cell"></div>
+                `;
+                upDiv.ondblclick = () => {
+                   if (breadcrumb.length > 1) {
+                       goToCrumb(breadcrumb.length - 2);
+                   } else {
+                       goRoot();
+                   }
+                };
+                
+                // Allow dropping cloud items OR local files here
+                upDiv.ondragover = (e) => { 
+                    e.preventDefault(); 
+                    upDiv.style.background = 'rgba(14, 124, 123, 0.1)';
+                    e.dataTransfer.dropEffect = 'move';
+                };
+                upDiv.ondragleave = () => { upDiv.style.background = 'rgba(14, 124, 123, 0.03)'; };
+                upDiv.ondrop = async (e) => {
+                    e.preventDefault();
+                    upDiv.style.background = 'rgba(14, 124, 123, 0.03)';
+                    
+                    const movedId = e.dataTransfer.getData('text/plain');
+                    if (movedId && draggedItem) {
+                        // Moving cloud item to parent
+                        let targetId = null;
+                        if (breadcrumb.length >= 2) {
+                            targetId = breadcrumb[breadcrumb.length - 2].id;
+                        }
+                        await moveItem(movedId, targetId);
+                    } else if (e.dataTransfer.files.length > 0) {
+                        // Uploading local files to parent
+                        let targetId = null;
+                        if (breadcrumb.length >= 2) {
+                            targetId = breadcrumb[breadcrumb.length - 2].id;
+                        }
+                        await uploadFilesDirectly(e.dataTransfer.files, targetId);
+                    }
+                };
+                container.appendChild(upDiv);
+            }
+
+            if (items.length === 0 && currentParentId === null && !currentQuery) {
+                container.innerHTML = '<div class="empty"><i class="fas fa-folder-open" style="font-size: 48px; display: block; margin-bottom: 12px; opacity: 0.3;"></i>这里什么也没有</div>';
+                return;
+            }
+
+            items.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'list-item';
+                div.draggable = true;
+                
+                const sizeStr = item.item_type === 'folder' ? '-' : formatSize(item.size || 0);
+                const updated = item.updated_at ? new Date(item.updated_at).toLocaleString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '-';
+                
+                let iconClass = 'fa-file';
+                if (item.item_type === 'folder') iconClass = 'fa-folder';
+                else {
+                    const mime = (item.mime_type || '').toLowerCase();
+                    if (mime.includes('image')) iconClass = 'fa-file-image';
+                    else if (mime.includes('pdf')) iconClass = 'fa-file-pdf';
+                    else if (mime.includes('word')) iconClass = 'fa-file-word';
+                    else if (mime.includes('excel') || mime.includes('sheet')) iconClass = 'fa-file-excel';
+                    else if (mime.includes('zip') || mime.includes('rar')) iconClass = 'fa-file-archive';
+                }
+
+                div.innerHTML = `
+                    <div class="item-name">
+                        <i class="fas ${iconClass}"></i>
+                        <span class="name-text">${item.name}</span>
+                        <div class="pills">
+                            ${item.is_favorited ? '<span class="pill pill-favorited">收藏</span>' : ''}
+                            ${item.is_shared ? '<span class="pill pill-shared">共享</span>' : ''}
+                            ${item.is_archived ? '<span class="pill pill-archived">归档</span>' : ''}
+                            ${item.visibility === 'group' ? '<span class="pill pill-group">团队</span>' : ''}
+                        </div>
+                    </div>
+                    <div class="item-meta">${sizeStr}</div>
+                    <div class="item-meta">${updated}</div>
+                    <div class="actions-cell">
+                        <button class="icon-btn" onclick="openContextMenu(event, ${JSON.stringify(item).replace(/"/g, '&quot;')})">
+                            <i class="fas fa-ellipsis-v"></i>
+                        </button>
+                    </div>
+                `;
+
+                // Handle interaction
+                div.ondblclick = (e) => {
+                    if (e.target.closest('.icon-btn')) return;
+                    if (item.item_type === 'folder') openFolder(item);
+                    else {
+                        downloadItem(item.id);
+                    }
+                };
+
+                div.onclick = (e) => {
+                    // Single click for selection (UI feedback could be added here)
+                    if (e.target.closest('.icon-btn')) return;
+                    // Optional: add visual selection class
+                    document.querySelectorAll('.list-item').forEach(el => el.classList.remove('selected'));
+                    div.classList.add('selected');
+                };
+
+                // Context Menu
+                div.oncontextmenu = (e) => {
+                    e.preventDefault();
+                    openContextMenu(e, item);
+                };
+
+                // Drag and Drop (Moving)
+                div.ondragstart = (e) => {
+                    draggedItem = item;
+                    div.classList.add('dragging');
+                    e.dataTransfer.setData('text/plain', item.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                };
+                div.ondragend = () => {
+                    div.classList.remove('dragging');
+                    draggedItem = null;
+                };
+                
+                if (item.item_type === 'folder') {
+                    div.ondragover = (e) => {
+                        // Allow drop if dragging a file (cloud or local)
+                        e.preventDefault();
+                        if (draggedItem && draggedItem.id !== item.id) {
+                            div.classList.add('drag-over');
+                            e.dataTransfer.dropEffect = 'move';
+                        } else if (!draggedItem && e.dataTransfer.types.includes('Files')) {
+                            // Assume local file
+                            div.classList.add('drag-over');
+                            e.dataTransfer.dropEffect = 'copy';
+                        }
+                    };
+                    div.ondragleave = () => {
+                        div.classList.remove('drag-over');
+                    };
+                    div.ondrop = async (e) => {
+                        e.preventDefault();
+                        div.classList.remove('drag-over');
+                        
+                        // Case 1: Moving Cloud Item
+                        const movedId = e.dataTransfer.getData('text/plain');
+                        if (movedId && draggedItem) {
+                            if (draggedItem.id !== item.id) {
+                                await moveItem(movedId, item.id);
+                            }
+                            return;
+                        }
+
+                        // Case 2: Uploading Local Files into this subfolder
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            // Upload to THIS folder, not currentParentId
+                            await uploadFilesDirectly(e.dataTransfer.files, item.id);
+                        }
+                    };
+                }
+
+                container.appendChild(div);
+            });
+        }
+
+        // --- Context Menu Settings ---
+        function openContextMenu(e, item) {
+            contextTargetItem = item;
+            const menu = document.getElementById('contextMenu');
+            menu.style.display = 'block';
+            
+            // Adjust position
+            let x = e.clientX;
+            let y = e.clientY;
+            if (x + 200 > window.innerWidth) x -= 200;
+            if (y + 350 > window.innerHeight) y -= 350;
+            
+            menu.style.left = `${x}px`;
+            menu.style.top = `${y}px`;
+
+            // Toggle item visibility
+            document.getElementById('cm-open').style.display = item.item_type === 'folder' ? 'flex' : 'none';
+            document.getElementById('cm-download').style.display = item.item_type === 'file' ? 'flex' : 'none';
+            document.getElementById('cm-ocr').style.display = (item.mime_type || '').startsWith('image/') ? 'flex' : 'none';
+            document.getElementById('cm-version').style.display = item.item_type === 'file' ? 'flex' : 'none';
+            
+            const favText = item.is_favorited ? '取消收藏' : '收藏';
+            document.getElementById('cm-favorite').innerHTML = `<i class="fas fa-star"></i> ${favText}`;
+            
+            e.stopPropagation();
+        }
+
+        document.addEventListener('click', () => {
+            document.getElementById('contextMenu').style.display = 'none';
+        });
+
+        async function handleCmCommand(cmd) {
+            const item = contextTargetItem;
+            if (!item) return;
+            
+            switch(cmd) {
+                case 'open': openFolder(item); break;
+                case 'download': downloadItem(item.id); break;
+                case 'ocr': ocrFile(item.id); break;
+                case 'share': openShareModal(item.id); break;
+                case 'version': openVersions(item.id); break;
+                case 'favorite': toggleFavorite(item); break;
+                case 'rename': renameItem(item); break;
+                case 'delete': deleteItem(item); break;
+            }
+            document.getElementById('contextMenu').style.display = 'none';
+        }
+
+        // --- Drag & Drop Uploads ---
+        const dropZone = document.getElementById('dropZone');
+        dropZone.ondragover = (e) => {
+            e.preventDefault();
+            if (!draggedItem) dropZone.classList.add('drag-over');
+        };
+        dropZone.ondragleave = () => {
+            dropZone.classList.remove('drag-over');
+        };
+        dropZone.ondrop = async (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag-over');
+            if (draggedItem) return; // Handled by folder drop or ignored if dropped on root background (maybe support move to root? logic complex)
+
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                await uploadFilesDirectly(files);
+            }
+        };
+
+        // --- Chunked Upload Implementation ---
+        
+        async function uploadFileChunked(file, targetParentId = null) {
+            const chunkSize = 2 * 1024 * 1024; // 2MB
+            const totalChunks = Math.ceil(file.size / chunkSize);
+            const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+            const maxRetries = 3;
+
+            for (let i = 0; i < totalChunks; i++) {
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, file.size);
+                const chunk = file.slice(start, end);
+                
+                let attempts = 0;
+                let success = false;
+                while(attempts < maxRetries && !success) {
+                    try {
+                        const form = new FormData();
+                        form.append('upload_id', uploadId);
+                        form.append('chunk_index', i);
+                        form.append('file', chunk);
+                        await apiCall('/api/v1/cloud/upload/chunk', 'POST', form, true);
+                        success = true;
+                    } catch(e) {
+                        attempts++;
+                        console.warn(`Chunk ${i} retry ${attempts}`, e);
+                        if(attempts >= maxRetries) throw e;
+                        await new Promise(r => setTimeout(r, 1000 * attempts));
+                    }
+                }
+            }
+
+            const visibility = document.getElementById('visibilitySelect').value;
+            const groupId = document.getElementById('groupSelect').value || null;
+            const form = new FormData();
+            form.append('upload_id', uploadId);
+            form.append('filename', file.name);
+            form.append('total_chunks', totalChunks);
+            form.append('visibility', visibility);
+            if (visibility === 'group' && groupId) form.append('group_id', groupId);
+            
+            const pid = targetParentId !== null ? targetParentId : (currentParentId !== null ? currentParentId : '');
+            if (pid !== '') form.append('parent_id', pid);
+
+            await apiCall('/api/v1/cloud/upload/merge', 'POST', form, true);
+        }
+
+        async function uploadFilesDirectly(files, targetParentId = null) {
+            const total = files.length;
+            let successCount = 0;
+            showToast(`开始上传 ${total} 个文件 (支持大文件续传)...`);
+            
+            for (let i = 0; i < total; i++) {
+                const file = files[i];
+                try {
+                    showToast(`正在上传 (${i+1}/${total}): ${file.name}`);
+                    await uploadFileChunked(file, targetParentId);
+                    successCount++;
+                } catch (error) {
+                    console.error(error);
+                    showToast(`上传失败: ${file.name}`);
+                }
+            }
+            showToast(`处理完成: 成功 ${successCount} / ${total}`);
+            refreshList();
+        }
+
+        async function uploadFiles() {
+            const input = document.getElementById('fileInput');
+            if (input.files.length > 0) {
+                await uploadFilesDirectly(input.files);
+                input.value = '';
+            }
+        }
+
+        async function moveItem(itemId, targetFolderId) {
+            if (itemId == targetFolderId) return;
+            try {
+                // If targetFolderId is null, don't send it? or send null? 
+                // Py expects parent_id to be int or None. JSON body: {parent_id: null} works.
+                await apiCall(`/api/v1/cloud/items/${itemId}`, 'PUT', { parent_id: targetFolderId });
+                showToast('已移动');
+                refreshList();
+            } catch (error) {
+                showToast('移动失败: ' + error.message);
+            }
+        }
+
+        // --- Rest of original logic with minor UI tweaks ---
+
+        function formatSize(bytes) {
+            if (!bytes) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB'];
+            let size = bytes;
+            let idx = 0;
+            while (size >= 1024 && idx < units.length - 1) {
+                size /= 1024;
+                idx += 1;
+            }
+            return `${size.toFixed(1)} ${units[idx]}`;
+        }
+
+        function switchFilter(filter) {
+            currentFilter = filter;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.filter === filter);
+            });
+            refreshList();
+        }
+
+        function onSearchChange() {
+            currentQuery = document.getElementById('searchInput').value.trim();
+            refreshList();
+        }
+
+        function refreshList() {
+            renderBreadcrumbs();
+            loadItems();
+        }
+
+        async function ocrFile(itemId) {
+            const modal = document.getElementById('ocrModal');
+            const preview = document.getElementById('ocrPreview');
+            const textResult = document.getElementById('ocrTextResult');
+            const btn = document.getElementById('ocrScanBtn');
+            const placeholder = document.getElementById('ocrPlaceholder');
+            
+            textResult.innerHTML = '<div class="ocr-placeholder">正在加载图片...</div>';
+            modal.style.display = 'flex';
+            preview.style.display = 'none';
+            placeholder.style.display = 'block';
+            btn.style.display = 'none';
+
+            try {
+                // Fetch image with Auth to avoid 401
+                const response = await fetch(`/api/v1/cloud/items/${itemId}/download`, {
+                    headers: { 'Authorization': 'Bearer ' + authToken }
+                });
+                if(!response.ok) throw new Error('无法加载图片');
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                
+                preview.src = url;
+                preview.style.display = 'block';
+                placeholder.style.display = 'none';
+                btn.style.display = 'block';
+                btn.disabled = false;
+                btn.innerText = '开始识别';
+                textResult.innerHTML = '<div class="ocr-placeholder">图片已就绪，点击“开始识别”</div>';
+                
+                btn.onclick = async () => {
+                    btn.disabled = true;
+                    btn.innerText = '识别中...';
+                    const reader = new FileReader();
+                    reader.readAsDataURL(blob);
+                    reader.onloadend = async () => {
+                        const base64data = reader.result.split(',')[1];
+                        try {
+                            const ocrRes = await apiCall('/api/v1/cloud/ocr', 'POST', { image_base64: base64data });
+                            textResult.innerHTML = marked.parse(ocrRes.data.text);
+                            btn.innerText = '识别成功';
+                        } catch(e) {
+                            textResult.innerHTML = `<div style="color:red">识别失败: ${e.message}</div>`;
+                            btn.innerText = '重试';
+                            btn.disabled = false;
+                        }
+                    };
+                };
+            } catch (e) {
+                textResult.innerHTML = `<div style="color:red">错误: ${e.message}</div>`;
+            }
+        }
+
+        function openClipboardOcr() {
+            const modal = document.getElementById('ocrModal');
+            const preview = document.getElementById('ocrPreview');
+            const textResult = document.getElementById('ocrTextResult');
+            const btn = document.getElementById('ocrScanBtn');
+            const placeholder = document.getElementById('ocrPlaceholder');
+
+            preview.style.display = 'none';
+            placeholder.style.display = 'block';
+            btn.style.display = 'none';
+            textResult.innerHTML = '<div class="ocr-placeholder">请在此处按下 Ctrl+V 粘贴截图</div>';
+            modal.style.display = 'flex';
+        }
+
+        function closeOcrModal() {
+            document.getElementById('ocrModal').style.display = 'none';
+            const preview = document.getElementById('ocrPreview');
+            if(preview.src && preview.src.startsWith('blob:')) {
+                URL.revokeObjectURL(preview.src);
+            }
+        }
+
+        window.addEventListener('paste', async (e) => {
+            const modal = document.getElementById('ocrModal');
+            if (modal.style.display !== 'flex') return;
+
+            const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+            for (let item of items) {
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    const url = URL.createObjectURL(blob);
+                    
+                    const preview = document.getElementById('ocrPreview');
+                    const textResult = document.getElementById('ocrTextResult');
+                    const btn = document.getElementById('ocrScanBtn');
+                    const placeholder = document.getElementById('ocrPlaceholder');
+
+                    preview.src = url;
+                    preview.style.display = 'block';
+                    placeholder.style.display = 'none';
+                    btn.style.display = 'block';
+                    btn.disabled = false;
+                    btn.innerText = '开始识别';
+                    textResult.innerHTML = '<div class="ocr-placeholder">识别就绪</div>';
+                    
+                    btn.onclick = async () => {
+                        btn.disabled = true;
+                        btn.innerText = '识别中...';
+                        const reader = new FileReader();
+                        reader.readAsDataURL(blob);
+                        reader.onloadend = async () => {
+                            const base64data = reader.result.split(',')[1];
+                            try {
+                                const ocrRes = await apiCall('/api/v1/cloud/ocr', 'POST', { image_base64: base64data });
+                                textResult.innerHTML = marked.parse(ocrRes.data.text);
+                                btn.innerText = '识别成功';
+                            } catch(e) {
+                                textResult.innerHTML = `<div style="color:red">识别失败: ${e.message}</div>`;
+                                btn.innerText = '重试';
+                                btn.disabled = false;
+                            }
+                        };
+                    };
+                }
+            }
+        });
+
+        function openFolder(item) {
+            currentParentId = item.id;
+            breadcrumb.push({ id: item.id, name: item.name });
+            refreshList();
+        }
+
+        function goRoot() {
+            currentParentId = null;
+            breadcrumb = [];
+            refreshList();
+        }
+
+        function goToCrumb(idx) {
+            const target = breadcrumb[idx];
+            if (!target) return;
+            currentParentId = target.id;
+            breadcrumb = breadcrumb.slice(0, idx + 1);
+            refreshList();
+        }
+
+        function triggerUpload() {
+            document.getElementById('fileInput').click();
+        }
+
+        // Renamed/Deprecated logic handled by chunked flow now, but version upload remains simple (small files usually?)
+        // Let's update version upload to use chunked logic too? For simplicity, keeping simple logic for versions unless requested.
+        // User asked for "file upload", implied main upload.
+        async function uploadNewVersion() {
+            const input = document.getElementById('versionInput');
+            const file = input.files && input.files[0];
+            if (!file || !versionTargetId) return;
+            
+            showToast('正在上传新版本...');
+            // Reuse simple API for versions for now, or adapt chunked API to accept item_id
+            // The merge API supports item_id!
+            try {
+               await uploadFileChunkedVersion(file, versionTargetId);
+               showToast('新版本已上传');
+            } catch (error) {
+                showToast('上传失败: ' + error.message);
+            }
+            input.value = '';
+            versionTargetId = null;
+            refreshList();
+        }
+
+        async function uploadFileChunkedVersion(file, itemId) {
+            // Simplified copy of chunked upload for version
+             const chunkSize = 2 * 1024 * 1024;
+             const totalChunks = Math.ceil(file.size / chunkSize);
+             const uploadId = Date.now().toString(36) + Math.random().toString(36).substr(2);
+             for(let i=0; i<totalChunks; i++) {
+                 const blob = file.slice(i*chunkSize, Math.min((i+1)*chunkSize, file.size));
+                 const form = new FormData();
+                 form.append('upload_id', uploadId); form.append('chunk_index', i); form.append('file', blob);
+                 await apiCall('/api/v1/cloud/upload/chunk', 'POST', form, true);
+             }
+             const form = new FormData();
+             form.append('upload_id', uploadId);
+             form.append('filename', file.name);
+             form.append('total_chunks', totalChunks);
+             form.append('item_id', itemId); // This triggers version logic
+             await apiCall('/api/v1/cloud/upload/merge', 'POST', form, true);
+        }
+
+        function triggerVersionUpload(itemId) {
+            versionTargetId = itemId;
+            document.getElementById('versionInput').click();
+        }
+
+        async function createFolder() {
+            const name = prompt('输入文件夹名称');
+            if (!name) return;
+            const visibility = document.getElementById('visibilitySelect').value;
+            const groupId = document.getElementById('groupSelect').value || null;
+            try {
+                await apiCall('/api/v1/cloud/folders', 'POST', {
+                    name,
+                    parent_id: currentParentId,
+                    visibility,
+                    group_id: visibility === 'group' ? groupId : null
+                });
+                refreshList();
+            } catch (error) {
+                showToast('创建失败: ' + error.message);
+            }
+        }
+
+        async function renameItem(item) {
+            const name = prompt('输入新名称', item.name);
+            if (!name) return;
+            try {
+                await apiCall(`/api/v1/cloud/items/${item.id}`, 'PUT', { name });
+                refreshList();
+            } catch (error) {
+                showToast('重命名失败: ' + error.message);
+            }
+        }
+
+        async function deleteItem(item) {
+            if (!confirm(`确定要删除「${item.name}」吗？此操作不可撤销。`)) return;
+            try {
+                await apiCall(`/api/v1/cloud/items/${item.id}`, 'DELETE');
+                refreshList();
+            } catch (error) {
+                showToast('删除失败: ' + error.message);
+            }
+        }
+
+        async function toggleFavorite(item) {
+            try {
+                await apiCall(`/api/v1/cloud/items/${item.id}`, 'PUT', { is_favorited: !item.is_favorited });
+                refreshList();
+            } catch (error) {
+                showToast('操作失败: ' + error.message);
+            }
+        }
+
+        async function toggleArchive(item) {
+            try {
+                await apiCall(`/api/v1/cloud/items/${item.id}`, 'PUT', { is_archived: !item.is_archived });
+                refreshList();
+            } catch (error) {
+                showToast('操作失败: ' + error.message);
+            }
+        }
+
+        function downloadItem(id) {
+            const token = localStorage.getItem('authToken');
+            window.open(`/api/v1/cloud/items/${id}/download?token=${token}`, '_blank');
+        }
+
+        function openShareModal(id) {
+            shareTargetId = id;
+            document.getElementById('shareHours').value = '';
+            document.getElementById('shareMaxUses').value = '';
+            document.getElementById('shareResult').innerText = '';
+            document.getElementById('shareModal').style.display = 'flex';
+        }
+
+        function closeShareModal() {
+            document.getElementById('shareModal').style.display = 'none';
+            shareTargetId = null;
+        }
+
+        async function confirmShare() {
+            if (!shareTargetId) return;
+            const hours = document.getElementById('shareHours').value.trim();
+            const maxUses = document.getElementById('shareMaxUses').value.trim();
+            try {
+                const res = await apiCall(`/api/v1/cloud/items/${shareTargetId}/share`, 'POST', {
+                    expires_in_hours: hours || 0,
+                    max_uses: maxUses || 0
+                });
+                if (res && res.data) {
+                    document.getElementById('shareResult').innerText = `分享链接: ${res.data.share_url}`;
+                }
+            } catch (error) {
+                document.getElementById('shareResult').innerText = '生成失败: ' + error.message;
+            }
+        }
+
+        async function getAiSuggestions() {
+            showToast('准备开始 AI 整理方案...');
+            try {
+                const res = await apiCall('/api/v1/cloud/suggest', 'GET');
+                if (res && res.suggestions) {
+                    alert('AI 整理建议:\n' + res.suggestions);
+                } else {
+                    showToast('暂无建议');
+                }
+            } catch (error) {
+                showToast('获取建议失败: ' + error.message);
+            }
+        }
+
+        async function openVersions(itemId) {
+            document.getElementById('versionsModal').style.display = 'flex';
+            const list = document.getElementById('versionsList');
+            list.innerHTML = '正在加载...';
+            try {
+                const res = await apiCall(`/api/v1/cloud/items/${itemId}/versions`);
+                if (!res || !res.data || res.data.length === 0) {
+                    list.innerHTML = '<div class="muted">暂无版本记录</div>';
+                    return;
+                }
+                list.innerHTML = '';
+                res.data.forEach(ver => {
+                    const div = document.createElement('div');
+                    div.style.display = 'flex';
+                    div.style.justifyContent = 'space-between';
+                    div.style.alignItems = 'center';
+                    div.style.padding = '12px 0';
+                    div.style.borderBottom = '1px solid var(--line)';
+                    const created = ver.created_at ? new Date(ver.created_at).toLocaleString('zh-CN') : '-';
+                    div.innerHTML = `
+                        <div>
+                            <strong>v${ver.version_num}</strong>
+                            <span class="muted" style="margin-left: 8px;">${created}</span>
+                        </div>
+                        <button class="btn-ghost btn-small" onclick="downloadVersion(${ver.id})">下载</button>
+                    `;
+                    list.appendChild(div);
+                });
+            } catch (error) {
+                list.innerHTML = '加载失败: ' + error.message;
+            }
+        }
+
+        function closeVersionsModal() { document.getElementById('versionsModal').style.display = 'none'; }
+        function downloadVersion(versionId) {
+            const token = localStorage.getItem('authToken');
+            window.open(`/api/v1/cloud/versions/${versionId}/download?token=${token}`, '_blank');
+        }
+        function closeOcrModal() { document.getElementById('ocrModal').style.display = 'none'; }
+        function copyOcrText() {
+            const text = document.getElementById('ocrTextResult').innerText;
+            navigator.clipboard.writeText(text).then(() => showToast('已复制')).catch(() => showToast('复制失败'));
+        }
+
+        window.onload = async () => {
+            if (!authToken) {
+                window.location.href = '/login';
+                return;
+            }
+            await loadMe();
+            await loadGroups();
+            onVisibilityChange();
+            renderBreadcrumbs();
+            loadItems();
+        };
+    </script>
+</body>
+</html>

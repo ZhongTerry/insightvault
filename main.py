@@ -8,6 +8,10 @@ import base64
 import hashlib
 import hmac
 import secrets
+import uuid
+import mimetypes
+import shutil
+import glob
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 from contextlib import asynccontextmanager
@@ -17,8 +21,8 @@ if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 import httpx
-from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query, Depends, UploadFile, File, Form
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from psycopg_pool import AsyncConnectionPool
 from psycopg.rows import dict_row
@@ -37,6 +41,8 @@ logger = logging.getLogger("InsightVault")
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24
 PASSWORD_ITERATIONS = 120_000
+CLOUD_STORAGE_DIR = os.path.abspath(os.getenv("CLOUD_STORAGE_DIR", "storage"))
+OCR_MODEL = os.getenv("OCR_MODEL", "gpt-4o-mini").strip()
 
 def _b64url_encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
@@ -134,6 +140,8 @@ async def lifespan(app: FastAPI):
         await app.state.db_pool.wait() # 确保至少有一个连接可用
         logger.info("成功初始化异步数据库连接池 (Max: 10)")
 
+        os.makedirs(CLOUD_STORAGE_DIR, exist_ok=True)
+
         # --- 动态维度检测逻辑 ---
         logger.info("正在检测模型向量维度...")
         test_vec = await get_embedding("DimCheck")
@@ -154,6 +162,18 @@ async def lifespan(app: FastAPI):
                     role TEXT NOT NULL DEFAULT 'user',
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS system_settings (
+                    key TEXT PRIMARY KEY,
+                    value JSONB NOT NULL
+                );
+            """)
+            # Initialize default settings
+            await conn.execute("""
+                INSERT INTO system_settings (key, value)
+                VALUES ('registration', '{"allow": true}'::jsonb)
+                ON CONFLICT (key) DO NOTHING;
             """)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS groups (
@@ -215,6 +235,7 @@ async def lifespan(app: FastAPI):
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON user_api_keys (user_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON user_api_keys (key_hash);")
             await conn.execute("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT 'read,write';")
+            await conn.execute("ALTER TABLE user_api_keys ALTER COLUMN scopes SET DEFAULT 'read,write,reading,cloud';")
             
             # 强力同步数据库维度
             try:
@@ -298,6 +319,57 @@ async def lifespan(app: FastAPI):
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_owner ON reading_list (owner_user_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_created ON reading_list (created_at DESC);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_status ON reading_list (owner_user_id, is_read, is_archived);")
+
+            # 云盘表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_items (
+                    id SERIAL PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    parent_id INTEGER REFERENCES cloud_items(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    item_type TEXT NOT NULL CHECK (item_type IN ('file', 'folder')),
+                    size BIGINT DEFAULT 0,
+                    mime_type TEXT,
+                    storage_path TEXT,
+                    checksum TEXT,
+                    visibility TEXT DEFAULT 'private',
+                    group_id INTEGER REFERENCES groups(id),
+                    is_shared BOOLEAN DEFAULT FALSE,
+                    is_archived BOOLEAN DEFAULT FALSE,
+                    is_favorited BOOLEAN DEFAULT FALSE,
+                    tags TEXT[],
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_versions (
+                    id SERIAL PRIMARY KEY,
+                    item_id INTEGER REFERENCES cloud_items(id) ON DELETE CASCADE,
+                    version_num INTEGER NOT NULL,
+                    size BIGINT,
+                    checksum TEXT,
+                    storage_path TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    created_by INTEGER REFERENCES users(id)
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS cloud_shares (
+                    token TEXT PRIMARY KEY,
+                    item_id INTEGER REFERENCES cloud_items(id) ON DELETE CASCADE,
+                    created_by INTEGER REFERENCES users(id),
+                    expires_at TIMESTAMP WITH TIME ZONE,
+                    max_uses INTEGER DEFAULT 0,
+                    uses INTEGER DEFAULT 0,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_owner ON cloud_items (owner_user_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_parent ON cloud_items (parent_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_group ON cloud_items (group_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_name ON cloud_items (name);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_shared ON cloud_items (is_shared);")
             
             logger.info("数据库环境检查完成")
 
@@ -356,9 +428,16 @@ async def get_embedding(text: str):
 
 async def get_current_user(request: Request) -> dict:
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        # 允许从查询参数中获取 token，用于下载等无法设置 Header 的场景
+        token = request.query_params.get("token")
+
+    if not token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = auth.split(" ", 1)[1].strip()
+        
     payload = decode_access_token(token)
     user_id = int(payload.get("sub", 0))
 
@@ -374,10 +453,14 @@ async def get_current_user(request: Request) -> dict:
 async def get_current_user_or_api_key(request: Request) -> dict:
     """支持JWT token或API key认证"""
     auth = request.headers.get("Authorization", "")
-    if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = None
+    if auth.startswith("Bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = request.query_params.get("token")
     
-    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing bearer token or API key")
     
     # 尝试作为JWT解析
     try:
@@ -439,6 +522,8 @@ def require_scope(required_scope: str):
             return user  # JWT has full access
         
         scopes = user.get('scopes', [])
+        if required_scope in ('reading', 'cloud') and ('read' in scopes or 'write' in scopes):
+            return user
         if required_scope not in scopes and 'full' not in scopes:
             raise HTTPException(status_code=403, detail=f"Scope '{required_scope}' required")
         return user
@@ -533,10 +618,119 @@ async def set_item_tags(
                         (item_id, row["id"])
                     )
 
+def safe_filename(name: str) -> str:
+    name = os.path.basename(name).strip()
+    if not name:
+        return "file"
+    for ch in ["/", "\\", ".."]:
+        name = name.replace(ch, "_")
+    return name
+
+def cloud_storage_path(user_id: int, original_name: str) -> str:
+    ext = os.path.splitext(original_name)[1]
+    storage_name = f"{uuid.uuid4().hex}{ext}"
+    user_dir = os.path.join(CLOUD_STORAGE_DIR, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+    return os.path.join(user_dir, storage_name)
+
+def save_upload_stream(upload: UploadFile, dest_path: str) -> dict:
+    hasher = hashlib.sha256()
+    size = 0
+    with open(dest_path, "wb") as f:
+        while True:
+            chunk = upload.file.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            hasher.update(chunk)
+            size += len(chunk)
+    return {"size": size, "checksum": hasher.hexdigest()}
+
+def ensure_within_storage(path: str) -> bool:
+    real_path = os.path.realpath(path)
+    return real_path.startswith(CLOUD_STORAGE_DIR)
+
+async def ocr_with_ai(image_b64: str) -> str:
+    base_url = os.getenv("AI_BASE_URL", "").rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="AI_BASE_URL not configured")
+    model = OCR_MODEL or os.getenv("VISION_MODEL", "").strip() or "gpt-4o-mini"
+    endpoint = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a specialized OCR engine. Extract text from images exactly as written. \n1. ONLY output the extracted text.\n2. Do NOT add any punctuation like '}' or words like 'Note' at the end.\n3. Do NOT attempt to complete, fix, or format the text beyond basic layout.\n4. Use Markdown tables if you see a table.\n5. If the image contains a snippet like 'in a far away land...', simply output that text. NEVER assume it's code or needs closure."
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract all text from this image exactly as it is. NO extra characters at the end."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
+                ]
+            }
+        ],
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "top_p": 1
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {os.getenv('AI_API_KEY')}"}, timeout=60.0)
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"]["content"].strip()
+            # If the model wraps it in markdown code blocks like ```markdown ... ```, strip them
+            if content.startswith("```markdown") and content.endswith("```"):
+                content = content[11:-3].strip()
+            elif content.startswith("```") and content.endswith("```"):
+                content = content[3:-3].strip()
+            return content
+        except Exception as e:
+            logger.error(f"OCR Error: {e}")
+            raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+
+async def get_cloud_item_for_user(request: Request, item_id: int, user: dict) -> dict:
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM cloud_items
+                WHERE id = %s
+                  AND (owner_user_id = %s OR (visibility = 'group' AND group_id = ANY(%s)))
+                """,
+                (item_id, user["id"], list(group_roles.keys()))
+            )
+            item = await cur.fetchone()
+    if not item:
+        raise HTTPException(status_code=404, detail="Cloud item not found")
+    return dict(item)
+
 # --- 4. 鉴权与用户组 ---
+
+async def get_system_setting(request: Request, key: str, default=None):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT value FROM system_settings WHERE key = %s", (key,))
+            row = await cur.fetchone()
+            return row["value"] if row else default
+
+def require_admin():
+    async def dependency(payload: dict = Depends(get_current_user)):
+        if payload.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        return payload
+    return dependency
 
 @app.post("/api/auth/register")
 async def api_register(request: Request, data: dict):
+    # Check registration toggle
+    reg_setting = await get_system_setting(request, "registration", {"allow": True})
+    if not reg_setting.get("allow", True):
+        raise HTTPException(status_code=403, detail="Registration is disabled by administrator")
+
     email = (data.get("email") or "").strip().lower()
     password = data.get("password") or ""
     name = (data.get("name") or "").strip()
@@ -846,6 +1040,10 @@ async def detail_page(request: Request):
 async def reading_page(request: Request):
     return templates.TemplateResponse("reading.html", {"request": request})
 
+@app.get("/cloud")
+async def cloud_page(request: Request):
+    return templates.TemplateResponse("cloud.html", {"request": request})
+
 # 异步背景任务：向量化单个项目
 async def background_vectorize_item(pool: AsyncConnectionPool, item_id: int, text_to_vectorize: str):
     """后台任务：为单个情报项生成向量并更新数据库"""
@@ -1122,6 +1320,39 @@ async def api_v1_create_item(
     logger.info(f"✓ 情报 #{item_id} 已创建，向量化任务已加入队列")
     return {"status": "success", "data": {"id": item_id}}
 
+@app.post("/api/v1/items/from-link")
+async def api_v1_create_item_from_link(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """创建仅链接的情报项目（标题 + URL）"""
+    title = (data.get('title') or '').strip()
+    url = (data.get('url') or '').strip()
+    note = (data.get('note') or '').strip()
+    if not title or not url:
+        raise HTTPException(status_code=400, detail="Title and URL are required")
+    content = f"# {title}\n\n**来源**: {url}\n"
+    if note:
+        content += f"\n---\n\n{note}\n"
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO intelligence_vault (title, content, embedding, owner_user_id, visibility, vectorization_status)
+                VALUES (%s, %s, NULL, %s, 'private', 'pending')
+                RETURNING id
+                """,
+                (title, content, user["id"])
+            )
+            row = await cur.fetchone()
+            item_id = row["id"]
+
+    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, f"{title} {content}")
+    return {"status": "success", "data": {"id": item_id}}
+
 @app.put("/api/v1/items/{item_id}")
 async def api_v1_update_item(
     request: Request,
@@ -1255,7 +1486,7 @@ async def api_v1_update_item_status(
 async def api_v1_create_reading_item(
     request: Request,
     data: dict,
-    user: dict = Depends(require_scope('write'))
+    user: dict = Depends(require_scope('reading'))
 ):
     """添加稍后阅读项目"""
     title = (data.get('title') or '').strip()
@@ -1297,7 +1528,7 @@ async def api_v1_list_reading_items(
     filter: str = 'all',  # all, unread, read, archived
     page: int = 1,
     per_page: int = Query(default=20, le=100),
-    user: dict = Depends(require_scope('read'))
+    user: dict = Depends(require_scope('reading'))
 ):
     """获取阅读列表"""
     offset = (page - 1) * per_page
@@ -1346,7 +1577,7 @@ async def api_v1_list_reading_items(
 async def api_v1_get_reading_item(
     request: Request,
     item_id: int,
-    user: dict = Depends(require_scope('read'))
+    user: dict = Depends(require_scope('reading'))
 ):
     """获取单个阅读项详情"""
     async with request.app.state.db_pool.connection() as conn:
@@ -1375,7 +1606,7 @@ async def api_v1_update_reading_item(
     request: Request,
     item_id: int,
     data: dict,
-    user: dict = Depends(require_scope('write'))
+    user: dict = Depends(require_scope('reading'))
 ):
     """更新阅读项（标记已读、归档等）"""
     async with request.app.state.db_pool.connection() as conn:
@@ -1425,7 +1656,7 @@ async def api_v1_update_reading_item(
 async def api_v1_delete_reading_item(
     request: Request,
     item_id: int,
-    user: dict = Depends(require_scope('write'))
+    user: dict = Depends(require_scope('reading'))
 ):
     """删除阅读项"""
     async with request.app.state.db_pool.connection() as conn:
@@ -1461,13 +1692,12 @@ async def api_v1_save_reading_to_vault(
             if not reading_item:
                 raise HTTPException(status_code=404, detail="Reading item not found")
             
-            # 如果没有内容，不允许保存
-            if not reading_item['has_content']:
-                raise HTTPException(status_code=400, detail="Cannot save item without content")
-            
             # 创建情报项
             title = f"{reading_item['title']} (来源: {reading_item['source'] or reading_item['url']})"
-            content = f"# {reading_item['title']}\n\n**来源**: {reading_item['url']}\n\n---\n\n{reading_item['content']}"
+            if reading_item['has_content']:
+                content = f"# {reading_item['title']}\n\n**来源**: {reading_item['url']}\n\n---\n\n{reading_item['content']}"
+            else:
+                content = f"# {reading_item['title']}\n\n**来源**: {reading_item['url']}\n\n> 仅保存链接，无正文内容。"
             
             await cur.execute(
                 """
@@ -1491,6 +1721,718 @@ async def api_v1_save_reading_to_vault(
     background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, vault_id, text_to_vectorize)
     
     return {"status": "success", "data": {"vault_id": vault_id}}
+
+# --- Cloud Drive API (云盘) ---
+
+@app.get("/api/v1/cloud/items")
+async def api_v1_cloud_list_items(
+    request: Request,
+    parent_id: Optional[int] = None,
+    filter_by: str = 'all',  # all, favorites, archived, shared
+    q: str = '',
+    page: int = 1,
+    per_page: int = Query(default=50, le=200),
+    user: dict = Depends(require_scope('cloud'))
+):
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    offset = (page - 1) * per_page
+    params = [user["id"], list(group_roles.keys())]
+    where_sql = "WHERE (owner_user_id = %s OR (visibility = 'group' AND group_id = ANY(%s)))"
+
+    if parent_id is None:
+        where_sql += " AND parent_id IS NULL"
+    else:
+        where_sql += " AND parent_id = %s"
+        params.append(parent_id)
+
+    if filter_by == 'favorites':
+        where_sql += " AND is_favorited = TRUE AND is_archived = FALSE"
+    elif filter_by == 'archived':
+        where_sql += " AND is_archived = TRUE"
+    elif filter_by == 'shared':
+        where_sql += " AND is_shared = TRUE"
+    else:
+        where_sql += " AND is_archived = FALSE"
+
+    if q:
+        where_sql += " AND name ILIKE %s"
+        params.append(f"%{q}%")
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"""
+                SELECT id, name, item_type, size, mime_type, visibility, group_id,
+                       is_shared, is_archived, is_favorited, tags, created_at, updated_at
+                FROM cloud_items
+                {where_sql}
+                ORDER BY CASE WHEN item_type = 'folder' THEN 0 ELSE 1 END, name ASC
+                LIMIT %s OFFSET %s
+                """,
+                params + [per_page, offset]
+            )
+            rows = await cur.fetchall()
+
+    results = [dict(row) for row in rows]
+    for r in results:
+        if isinstance(r.get('created_at'), datetime):
+            r['created_at'] = r['created_at'].isoformat()
+        if isinstance(r.get('updated_at'), datetime):
+            r['updated_at'] = r['updated_at'].isoformat()
+
+    return {
+        "status": "success",
+        "data": results,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "has_more": len(results) == per_page
+        }
+    }
+
+@app.post("/api/v1/cloud/folders")
+async def api_v1_cloud_create_folder(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('cloud'))
+):
+    name = safe_filename((data.get('name') or '').strip())
+    parent_id = data.get('parent_id')
+    visibility = (data.get('visibility') or 'private').strip()
+    group_id = data.get('group_id')
+    tags = normalize_tags(data.get('tags'))
+
+    if not name:
+        raise HTTPException(status_code=400, detail="Folder name is required")
+    if visibility not in ("private", "group"):
+        raise HTTPException(status_code=400, detail="Visibility must be 'private' or 'group'")
+
+    if visibility == "group":
+        if not group_id:
+            raise HTTPException(status_code=400, detail="group_id is required for group visibility")
+        group_id = int(group_id)
+        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+        if group_id not in group_roles:
+            raise HTTPException(status_code=403, detail="Not a member of the group")
+    else:
+        group_id = None
+
+    if parent_id is not None:
+        parent = await get_cloud_item_for_user(request, int(parent_id), user)
+        if parent.get('item_type') != 'folder':
+            raise HTTPException(status_code=400, detail="Parent must be a folder")
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO cloud_items (owner_user_id, parent_id, name, item_type, visibility, group_id, tags)
+                VALUES (%s, %s, %s, 'folder', %s, %s, %s)
+                RETURNING id
+                """,
+                (user["id"], parent_id, name, visibility, group_id, tags)
+            )
+            row = await cur.fetchone()
+    return {"status": "success", "data": {"id": row["id"]}}
+
+
+@app.post("/api/v1/cloud/upload/chunk")
+async def api_v1_upload_chunk(
+    upload_id: str = Form(...),
+    chunk_index: int = Form(...),
+    file: UploadFile = File(...),
+    user: dict = Depends(require_scope('cloud'))
+):
+    """上传文件分片"""
+    # 安全检查 upload_id
+    if not upload_id.isalnum():
+         raise HTTPException(status_code=400, detail="Invalid upload_id")
+         
+    temp_dir = os.path.join(CLOUD_STORAGE_DIR, "temp", upload_id)
+    os.makedirs(temp_dir, exist_ok=True)
+    chunk_path = os.path.join(temp_dir, f"{chunk_index}")
+    
+    with open(chunk_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    
+    return {"status": "success"}
+
+@app.post("/api/v1/cloud/upload/merge")
+async def api_v1_upload_merge(
+    request: Request,
+    upload_id: str = Form(...),
+    filename: str = Form(...),
+    total_chunks: int = Form(...),
+    parent_id: Optional[int] = Form(None),
+    visibility: str = Form("private"),
+    group_id: Optional[int] = Form(None),
+    item_id: Optional[int] = Form(None),
+    tags: str = Form(""),
+    user: dict = Depends(require_scope('cloud'))
+):
+    """合并分片并保存文件"""
+    if not upload_id.isalnum():
+         raise HTTPException(status_code=400, detail="Invalid upload_id")
+
+    temp_dir = os.path.join(CLOUD_STORAGE_DIR, "temp", upload_id)
+    if not os.path.exists(temp_dir):
+        raise HTTPException(status_code=400, detail="Upload session not found")
+
+    # 1. Merge files
+    filename = safe_filename(filename)
+    final_storage_path = cloud_storage_path(user["id"], filename)
+    
+    # Ensure dir exists (cloud_storage_path creates user dir but safeguard)
+    os.makedirs(os.path.dirname(final_storage_path), exist_ok=True)
+
+    try:
+        with open(final_storage_path, "wb") as outfile:
+            for i in range(total_chunks):
+                chunk_path = os.path.join(temp_dir, f"{i}")
+                if not os.path.exists(chunk_path):
+                    raise HTTPException(status_code=400, detail=f"Missing chunk {i}")
+                with open(chunk_path, "rb") as infile:
+                    shutil.copyfileobj(infile, outfile)
+    except Exception as e:
+        logger.error(f"Merge failed: {e}")
+        raise HTTPException(status_code=500, detail="Merge failed")
+    finally:
+        # Cleanup chunks
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # 2. Calculate metadata
+    mime_type = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+    hasher = hashlib.sha256()
+    size = 0
+    with open(final_storage_path, "rb") as f:
+        while chunk := f.read(8192):
+            hasher.update(chunk)
+            size += len(chunk)
+    checksum = hasher.hexdigest()
+
+    # 3. DB Insertion (Similar to api_v1_cloud_upload)
+    
+    # --- Logic for New Version ---
+    if item_id:
+        existing = await get_cloud_item_for_user(request, int(item_id), user)
+        if existing.get('item_type') != 'file':
+            raise HTTPException(status_code=400, detail="Only files can upload new versions")
+
+        async with request.app.state.db_pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT COALESCE(MAX(version_num), 0) AS max_ver FROM cloud_versions WHERE item_id = %s",
+                    (item_id,)
+                )
+                row = await cur.fetchone()
+                next_ver = int(row["max_ver"]) + 1
+                await cur.execute(
+                    """
+                    INSERT INTO cloud_versions (item_id, version_num, size, checksum, storage_path, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (item_id, next_ver, size, checksum, final_storage_path, user["id"])
+                )
+                await cur.execute(
+                    """
+                    UPDATE cloud_items
+                    SET size = %s, checksum = %s, storage_path = %s, mime_type = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (size, checksum, final_storage_path, mime_type, item_id)
+                )
+        return {"status": "success", "data": {"id": int(item_id), "version": next_ver}}
+
+    # --- Logic for New File ---
+    if visibility not in ("private", "group"):
+        raise HTTPException(status_code=400, detail="Visibility")
+    if visibility == "group":
+        if not group_id:
+             raise HTTPException(status_code=400, detail="Group ID required")
+        # Skipping strictly redundant group check for brevity (assumed handled by FE/Token role, but technically should check)
+        # Re-adding check for safety:
+        group_id = int(group_id)
+        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+        if group_id not in group_roles:
+            raise HTTPException(status_code=403, detail="Not group member")
+    else:
+        group_id = None
+
+    if parent_id is not None:
+        parent = await get_cloud_item_for_user(request, int(parent_id), user)
+        if parent.get('item_type') != 'folder':
+             raise HTTPException(status_code=400, detail="Parent not folder")
+
+    tags_list = normalize_tags(tags)
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO cloud_items (owner_user_id, parent_id, name, item_type, size, mime_type, storage_path,
+                                         checksum, visibility, group_id, tags)
+                VALUES (%s, %s, %s, 'file', %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (user["id"], parent_id, filename, size, mime_type, final_storage_path, checksum, visibility, group_id, tags_list)
+            )
+            row = await cur.fetchone()
+            new_id = row["id"]
+
+    return {"status": "success", "data": {"id": new_id, "name": filename}}
+
+@app.post("/api/v1/cloud/upload")
+async def api_v1_cloud_upload(
+    request: Request,
+    file: UploadFile = File(...),
+    parent_id: Optional[int] = Form(None),
+    visibility: str = Form('private'),
+    group_id: Optional[int] = Form(None),
+    item_id: Optional[int] = Form(None),
+    tags: Optional[str] = Form(None),
+    user: dict = Depends(require_scope('cloud'))
+):
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="File is required")
+
+    filename = safe_filename(file.filename)
+    mime_type = file.content_type or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+
+    if item_id:
+        existing = await get_cloud_item_for_user(request, int(item_id), user)
+        if existing.get('item_type') != 'file':
+            raise HTTPException(status_code=400, detail="Only files can upload new versions")
+        storage_path = cloud_storage_path(user["id"], filename)
+        meta = save_upload_stream(file, storage_path)
+        if not ensure_within_storage(storage_path):
+            raise HTTPException(status_code=400, detail="Invalid storage path")
+
+        async with request.app.state.db_pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT COALESCE(MAX(version_num), 0) AS max_ver FROM cloud_versions WHERE item_id = %s",
+                    (item_id,)
+                )
+                row = await cur.fetchone()
+                next_ver = int(row["max_ver"]) + 1
+                await cur.execute(
+                    """
+                    INSERT INTO cloud_versions (item_id, version_num, size, checksum, storage_path, created_by)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (item_id, next_ver, meta["size"], meta["checksum"], storage_path, user["id"])
+                )
+                await cur.execute(
+                    """
+                    UPDATE cloud_items
+                    SET size = %s, checksum = %s, storage_path = %s, mime_type = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = %s
+                    """,
+                    (meta["size"], meta["checksum"], storage_path, mime_type, item_id)
+                )
+        return {"status": "success", "data": {"id": int(item_id), "version": next_ver}}
+
+    if visibility not in ("private", "group"):
+        raise HTTPException(status_code=400, detail="Visibility must be 'private' or 'group'")
+    if visibility == "group":
+        if not group_id:
+            raise HTTPException(status_code=400, detail="group_id is required for group visibility")
+        group_id = int(group_id)
+        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+        if group_id not in group_roles:
+            raise HTTPException(status_code=403, detail="Not a member of the group")
+    else:
+        group_id = None
+
+    if parent_id is not None:
+        parent = await get_cloud_item_for_user(request, int(parent_id), user)
+        if parent.get('item_type') != 'folder':
+            raise HTTPException(status_code=400, detail="Parent must be a folder")
+
+    storage_path = cloud_storage_path(user["id"], filename)
+    meta = save_upload_stream(file, storage_path)
+    if not ensure_within_storage(storage_path):
+        raise HTTPException(status_code=400, detail="Invalid storage path")
+
+    tags_list = normalize_tags(tags)
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO cloud_items (owner_user_id, parent_id, name, item_type, size, mime_type, storage_path,
+                                         checksum, visibility, group_id, tags)
+                VALUES (%s, %s, %s, 'file', %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (user["id"], parent_id, filename, meta["size"], mime_type, storage_path, meta["checksum"], visibility, group_id, tags_list)
+            )
+            row = await cur.fetchone()
+            item_id = row["id"]
+            await cur.execute(
+                """
+                INSERT INTO cloud_versions (item_id, version_num, size, checksum, storage_path, created_by)
+                VALUES (%s, 1, %s, %s, %s, %s)
+                """,
+                (item_id, meta["size"], meta["checksum"], storage_path, user["id"])
+            )
+
+    return {"status": "success", "data": {"id": item_id}}
+
+@app.put("/api/v1/cloud/items/{item_id}")
+async def api_v1_cloud_update_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('cloud'))
+):
+    name = data.get('name')
+    parent_id = data.get('parent_id')
+    is_archived = data.get('is_archived')
+    is_favorited = data.get('is_favorited')
+    tags = data.get('tags')
+    is_shared = data.get('is_shared')
+    visibility = data.get('visibility')
+    group_id = data.get('group_id')
+
+    item = await get_cloud_item_for_user(request, item_id, user)
+
+    updates = []
+    params = []
+
+    if name is not None:
+        updates.append("name = %s")
+        params.append(safe_filename(str(name)))
+    if 'parent_id' in data:
+        if parent_id is None:
+            updates.append("parent_id = NULL")
+        else:
+            if parent_id == item_id:
+                raise HTTPException(status_code=400, detail="Invalid parent_id")
+            parent = await get_cloud_item_for_user(request, int(parent_id), user)
+            if parent.get('item_type') != 'folder':
+                raise HTTPException(status_code=400, detail="Parent must be a folder")
+            updates.append("parent_id = %s")
+            params.append(parent_id)
+    if isinstance(is_archived, bool):
+        updates.append("is_archived = %s")
+        params.append(is_archived)
+    if isinstance(is_favorited, bool):
+        updates.append("is_favorited = %s")
+        params.append(is_favorited)
+    if isinstance(is_shared, bool):
+        updates.append("is_shared = %s")
+        params.append(is_shared)
+    if tags is not None:
+        updates.append("tags = %s")
+        params.append(normalize_tags(tags))
+    if visibility is not None:
+        if visibility not in ("private", "group"):
+            raise HTTPException(status_code=400, detail="Visibility must be 'private' or 'group'")
+        if visibility == "group":
+            if not group_id:
+                raise HTTPException(status_code=400, detail="group_id is required for group visibility")
+            group_id = int(group_id)
+            group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+            if group_id not in group_roles:
+                raise HTTPException(status_code=403, detail="Not a member of the group")
+        else:
+            group_id = None
+        updates.append("visibility = %s")
+        params.append(visibility)
+        updates.append("group_id = %s")
+        params.append(group_id)
+
+    if not updates:
+        return {"status": "success"}
+
+    updates.append("updated_at = CURRENT_TIMESTAMP")
+    params.append(item_id)
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"UPDATE cloud_items SET {', '.join(updates)} WHERE id = %s",
+                params
+            )
+
+    return {"status": "success"}
+
+@app.delete("/api/v1/cloud/items/{item_id}")
+async def api_v1_cloud_delete_item(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('cloud'))
+):
+    async def _delete_recursive(conn, target_id: int):
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, item_type, storage_path FROM cloud_items WHERE id = %s",
+                (target_id,)
+            )
+            row = await cur.fetchone()
+            if not row:
+                return
+            await cur.execute(
+                "SELECT id FROM cloud_items WHERE parent_id = %s",
+                (target_id,)
+            )
+            children = await cur.fetchall()
+        for child in children:
+            await _delete_recursive(conn, child["id"])
+        if row["item_type"] == 'file' and row.get("storage_path"):
+            try:
+                if ensure_within_storage(row["storage_path"]) and os.path.exists(row["storage_path"]):
+                    os.remove(row["storage_path"])
+            except Exception:
+                pass
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM cloud_items WHERE id = %s", (target_id,))
+
+    await get_cloud_item_for_user(request, item_id, user)
+    async with request.app.state.db_pool.connection() as conn:
+        await _delete_recursive(conn, item_id)
+    return {"status": "success"}
+
+@app.get("/api/v1/cloud/items/{item_id}/download")
+async def api_v1_cloud_download_item(
+    request: Request,
+    item_id: int,
+    inline: bool = False,
+    user: dict = Depends(require_scope('cloud'))
+):
+    item = await get_cloud_item_for_user(request, item_id, user)
+    if item.get('item_type') != 'file':
+        raise HTTPException(status_code=400, detail="Only files can be downloaded")
+    storage_path = item.get('storage_path')
+    if not storage_path or not os.path.exists(storage_path) or not ensure_within_storage(storage_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    disposition = "inline" if inline else "attachment"
+    headers = {"Content-Disposition": f"{disposition}; filename=\"{item['name']}\""}
+    return FileResponse(storage_path, media_type=item.get('mime_type') or 'application/octet-stream', headers=headers)
+
+@app.get("/api/v1/cloud/items/{item_id}/versions")
+async def api_v1_cloud_list_versions(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('cloud'))
+):
+    await get_cloud_item_for_user(request, item_id, user)
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id, version_num, size, checksum, created_at
+                FROM cloud_versions
+                WHERE item_id = %s
+                ORDER BY version_num DESC
+                """,
+                (item_id,)
+            )
+            rows = await cur.fetchall()
+    results = [dict(row) for row in rows]
+    for r in results:
+        if isinstance(r.get('created_at'), datetime):
+            r['created_at'] = r['created_at'].isoformat()
+    return {"status": "success", "data": results}
+
+@app.get("/api/v1/cloud/versions/{version_id}/download")
+async def api_v1_cloud_download_version(
+    request: Request,
+    version_id: int,
+    user: dict = Depends(require_scope('cloud'))
+):
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT cv.storage_path, cv.size, ci.name, ci.mime_type
+                FROM cloud_versions cv
+                JOIN cloud_items ci ON ci.id = cv.item_id
+                WHERE cv.id = %s
+                  AND (ci.owner_user_id = %s OR (ci.visibility = 'group' AND ci.group_id = ANY(%s)))
+                """,
+                (version_id, user["id"], list(group_roles.keys()))
+            )
+            row = await cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Version not found")
+    storage_path = row["storage_path"]
+    if not storage_path or not os.path.exists(storage_path) or not ensure_within_storage(storage_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    headers = {"Content-Disposition": f"attachment; filename=\"{row['name']}\""}
+    return FileResponse(storage_path, media_type=row.get('mime_type') or 'application/octet-stream', headers=headers)
+
+@app.post("/api/v1/cloud/items/{item_id}/share")
+async def api_v1_cloud_share_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('cloud'))
+):
+    item = await get_cloud_item_for_user(request, item_id, user)
+    if item.get('item_type') != 'file':
+        raise HTTPException(status_code=400, detail="Only files can be shared")
+    expires_in_hours = int(data.get('expires_in_hours') or 0)
+    max_uses = int(data.get('max_uses') or 0)
+    expires_at = None
+    if expires_in_hours > 0:
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=expires_in_hours)
+    token = secrets.token_urlsafe(24)
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO cloud_shares (token, item_id, created_by, expires_at, max_uses)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (token, item_id, user["id"], expires_at, max_uses)
+            )
+            await cur.execute("UPDATE cloud_items SET is_shared = TRUE WHERE id = %s", (item_id,))
+
+    return {"status": "success", "data": {"share_token": token, "share_url": f"/api/v1/cloud/share/{token}"}}
+
+@app.get("/api/v1/cloud/share/{token}")
+async def api_v1_cloud_download_shared(token: str):
+    async with app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT cs.token, cs.expires_at, cs.max_uses, cs.uses,
+                       ci.name, ci.storage_path, ci.mime_type, ci.item_type
+                FROM cloud_shares cs
+                JOIN cloud_items ci ON ci.id = cs.item_id
+                WHERE cs.token = %s
+                """,
+                (token,)
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Share not found")
+
+            if row["expires_at"] and row["expires_at"] < datetime.now(timezone.utc):
+                raise HTTPException(status_code=410, detail="Share expired")
+            if row["max_uses"] and row["uses"] >= row["max_uses"]:
+                raise HTTPException(status_code=410, detail="Share usage exceeded")
+            if row["item_type"] != 'file':
+                raise HTTPException(status_code=400, detail="Shared item is not a file")
+
+            await cur.execute("UPDATE cloud_shares SET uses = uses + 1 WHERE token = %s", (token,))
+
+    storage_path = row["storage_path"]
+    if not storage_path or not os.path.exists(storage_path) or not ensure_within_storage(storage_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    headers = {"Content-Disposition": f"attachment; filename=\"{row['name']}\""}
+    return FileResponse(storage_path, media_type=row.get('mime_type') or 'application/octet-stream', headers=headers)
+
+@app.post("/api/v1/cloud/ocr")
+async def api_v1_cloud_ocr(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('cloud'))
+):
+    image_base64 = data.get('image_base64')
+    file_id = data.get('file_id')
+
+    if file_id:
+        item = await get_cloud_item_for_user(request, int(file_id), user)
+        if not item.get('mime_type', '').startswith('image/'):
+            raise HTTPException(status_code=400, detail="Only image files can be OCR processed")
+        storage_path = item.get('storage_path')
+        if not storage_path or not os.path.exists(storage_path) or not ensure_within_storage(storage_path):
+            raise HTTPException(status_code=404, detail="File not found")
+        with open(storage_path, "rb") as f:
+            image_base64 = base64.b64encode(f.read()).decode("ascii")
+
+    if not image_base64:
+        raise HTTPException(status_code=400, detail="image_base64 or file_id is required")
+
+    if image_base64.startswith("data:"):
+        image_base64 = image_base64.split(",", 1)[-1]
+
+    text = await ocr_with_ai(image_base64)
+    return {"status": "success", "data": {"text": text}}
+
+# --- 管理员后台 ---
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    return templates.TemplateResponse("admin.html", {"request": request})
+
+@app.get("/api/v1/admin/users")
+async def admin_list_users(request: Request, admin: dict = Depends(require_admin())):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT id, email, name, role, created_at,
+                (SELECT COUNT(*) FROM cloud_items WHERE owner_user_id = users.id) as file_count,
+                (SELECT SUM(size) FROM cloud_items WHERE owner_user_id = users.id) as storage_used
+                FROM users ORDER BY created_at DESC
+            """)
+            users = await cur.fetchall()
+            return {"users": users}
+
+@app.get("/api/v1/admin/settings")
+async def admin_get_settings(request: Request, admin: dict = Depends(require_admin())):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT key, value FROM system_settings")
+            rows = await cur.fetchall()
+            settings = {row["key"]: row["value"] for row in rows}
+            return {"settings": settings}
+
+@app.patch("/api/v1/admin/settings")
+async def admin_update_settings(request: Request, data: dict, admin: dict = Depends(require_admin())):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor() as cur:
+            for key, value in data.items():
+                await cur.execute("""
+                    INSERT INTO system_settings (key, value) VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                """, (key, json.dumps(value)))
+            return {"message": "Settings updated"}
+
+@app.get("/api/v1/admin/stats")
+async def admin_stats(request: Request, admin: dict = Depends(require_admin())):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("SELECT COUNT(*) as total_users FROM users")
+            user_stats = await cur.fetchone()
+            
+            await cur.execute("SELECT COUNT(*) as total_files, SUM(size) as total_size FROM cloud_items")
+            file_stats = await cur.fetchone()
+            
+            await cur.execute("SELECT COUNT(*) as total_reads FROM reading_list")
+            reading_stats = await cur.fetchone()
+
+            return {
+                "users": user_stats["total_users"],
+                "files": file_stats["total_files"] or 0,
+                "storage_used": int(file_stats["total_size"] or 0),
+                "readings": reading_stats["total_reads"] or 0
+            }
+
+@app.patch("/api/v1/admin/users/{user_id}")
+async def admin_update_user(request: Request, user_id: int, data: dict, admin: dict = Depends(require_admin())):
+    allowed_fields = ["role", "name"]
+    updates = []
+    params = []
+    
+    for field in allowed_fields:
+        if field in data:
+            updates.append(f"{field} = %s")
+            params.append(data[field])
+            
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+        
+    params.append(user_id)
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", params)
+            return {"message": "User updated"}
 
 # --- 5. API密钥管理 ---
 
@@ -1533,13 +2475,13 @@ async def api_list_keys(request: Request, user: dict = Depends(get_current_user)
 async def api_create_key(request: Request, data: dict, user: dict = Depends(get_current_user)):
     """创建新的API密钥"""
     key_name = (data.get("name") or "").strip()
-    scopes_list = data.get("scopes", ["read", "write"])  # 默认读写权限
+    scopes_list = data.get("scopes", ["read", "write", "reading", "cloud"])  # 默认读写 + 阅读/云盘
     
     if not key_name:
         raise HTTPException(status_code=400, detail="Key name is required")
     
     # 验证scopes
-    valid_scopes = {"read", "write", "admin"}
+    valid_scopes = {"read", "write", "admin", "reading", "cloud"}
     if not isinstance(scopes_list, list):
         raise HTTPException(status_code=400, detail="Scopes must be an array")
     

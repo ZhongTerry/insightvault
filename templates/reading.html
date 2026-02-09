@@ -304,16 +304,13 @@
             to { bottom: 24px; opacity: 1; }
         }
         @media (max-width: 900px) {
-            .container {
-                flex-direction: column;
-            }
-            .sidebar {
-                width: 100%;
-                height: 50vh;
-            }
-            .main-content {
-                height: 50vh;
-            }
+            body { overflow: auto; }
+            .container { flex-direction: column; height: auto; }
+            .sidebar { width: 100%; height: 50vh; }
+            .main-content { height: auto; min-height: 50vh; }
+            .content-header { padding: 16px 18px; }
+            .content-body { padding: 16px 18px; }
+            .article-actions { flex-wrap: wrap; }
         }
     </style>
 </head>
@@ -324,8 +321,11 @@
                 <div class="brand">📚 稍后阅读</div>
                 <div class="brand-subtitle">收集与整理你的网络发现</div>
                 <div class="nav-links">
+                    <a href="/">首页</a>
                     <a href="/app">情报库</a>
+                    <a href="/cloud">云盘</a>
                     <a href="/groups">团队</a>
+                    <a href="/settings">设置</a>
                     <a href="#" onclick="logout()">退出</a>
                 </div>
             </div>
@@ -505,6 +505,8 @@
                     </div>
                 `;
                 articleActions.innerHTML = `
+                    <button class="btn-link" onclick="window.open('${currentItem.url}', '_blank')" title="在新标签页打开原文">🔗 打开原文</button>
+                    <button class="btn-ghost" onclick="saveToVault()">保存链接到情报库</button>
                     <button class="btn-accent" onclick="deleteReading()">删除</button>
                 `;
             } else {
@@ -598,12 +600,10 @@
         async function saveToVault() {
             if (!currentItem) return;
             
-            if (!currentItem.has_content) {
-                showToast('无法保存：该文章没有内容');
-                return;
-            }
-            
-            if (!confirm('确定要将此文章保存到情报库吗？\n保存后将自动归档。')) return;
+            const confirmText = currentItem.has_content
+                ? '确定要将此文章保存到情报库吗？\n保存后将自动归档。'
+                : '确定要将此链接保存到情报库吗？\n保存后将自动归档。';
+            if (!confirm(confirmText)) return;
             
             try {
                 const res = await apiCall(`/api/v1/reading-list/${currentItem.id}/save-to-vault`, 'POST');

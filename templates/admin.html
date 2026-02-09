@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault - 管理员后台</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <style>
+        :root {
+            --primary: #0e7c7b;
+            --bg: #f8f9fa;
+            --ink: #1a1a1a;
+            --muted: #666;
+            --line: #eee;
+            --radius: 12px;
+            --shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            margin: 0; background: var(--bg); color: var(--ink); line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 40px 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+        .header h1 { margin: 0; font-size: 24px; display: flex; align-items: center; gap: 12px; }
+        .header h1 i { color: var(--primary); }
+
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }
+        .stat-card {
+            background: #fff; padding: 24px; border-radius: var(--radius); box-shadow: var(--shadow);
+            text-align: center;
+        }
+        .stat-card .value { font-size: 28px; font-weight: 700; color: var(--primary); margin-bottom: 4px; }
+        .stat-card .label { font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        .card { background: #fff; border-radius: var(--radius); box-shadow: var(--shadow); padding: 30px; margin-bottom: 30px; }
+        .card-title { font-size: 18px; font-weight: 700; margin-bottom: 24px; display: flex; align-items: center; gap: 10px; }
+
+        table { width: 100%; border-collapse: collapse; }
+        th { text-align: left; padding: 12px; border-bottom: 2px solid var(--line); font-size: 13px; color: var(--muted); font-weight: 700; }
+        td { padding: 16px 12px; border-bottom: 1px solid var(--line); font-size: 14px; }
+        .user-role { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 700; }
+        .role-admin { background: #fff3bf; color: #f08c00; }
+        .role-user { background: #e7f5ff; color: #1971c2; }
+
+        .btn {
+            padding: 8px 16px; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s;
+            border: none; font-size: 13px;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+        .btn-danger { background: #fff5f5; color: #e03131; border: 1px solid #ffc9c9; }
+        .btn-primary:hover { opacity: 0.9; }
+
+        .settings-row { display: flex; justify-content: space-between; align-items: center; padding: 16px 0; border-bottom: 1px solid var(--line); }
+        .settings-row:last-child { border-bottom: none; }
+        .switch {
+            position: relative; display: inline-block; width: 44px; height: 24px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #ccc; transition: .4s; border-radius: 24px;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px;
+            background-color: white; transition: .4s; border-radius: 50%;
+        }
+        input:checked + .slider { background-color: var(--primary); }
+        input:checked + .slider:before { transform: translateX(20px); }
+
+        .toast {
+            position: fixed; bottom: 20px; right: 20px; background: #333; color: #fff;
+            padding: 12px 24px; border-radius: 8px; font-size: 14px; z-index: 1000;
+        }
+
+        @media (max-width: 900px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fas fa-shield-halved"></i> 管理员控制台</h1>
+            <div style="display: flex; gap: 12px;">
+                <a href="/app" class="btn btn-ghost">回到主页</a>
+                <button class="btn btn-primary" onclick="loadAll()">刷新数据</button>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="value" id="stat-users">-</div>
+                <div class="label">累计用户</div>
+            </div>
+            <div class="stat-card">
+                <div class="value" id="stat-files">-</div>
+                <div class="label">存储文件</div>
+            </div>
+            <div class="stat-card">
+                <div class="value" id="stat-storage">-</div>
+                <div class="label">存储空间</div>
+            </div>
+            <div class="stat-card">
+                <div class="value" id="stat-readings">-</div>
+                <div class="label">阅读记录</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><i class="fas fa-users-gear"></i> 用户管理</div>
+            <div style="overflow-x: auto;">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>用户</th>
+                            <th>角色</th>
+                            <th>存储使用</th>
+                            <th>文件数</th>
+                            <th>注册时间</th>
+                            <th style="text-align: right;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="user-list">
+                        <!-- Users will load here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><i class="fas fa-sliders"></i> 系统设置</div>
+            <div class="settings-row">
+                <div>
+                    <div style="font-weight: 600;">允许用户注册</div>
+                    <div style="font-size: 13px; color: var(--muted);">关闭后，新的访问者无法创建账号。</div>
+                </div>
+                <div>
+                    <label class="switch">
+                        <input type="checkbox" id="setting-registration" onchange="toggleRegistration(this.checked)">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const authToken = localStorage.getItem('authToken');
+        if (!authToken) window.location.href = '/login';
+
+        async function api(path, method = 'GET', body = null) {
+            const options = {
+                method,
+                headers: { 'Authorization': `Bearer ${authToken}` }
+            };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch(path, options);
+            if (res.status === 403) {
+                alert('权限不足，仅管理员可访问。');
+                window.location.href = '/app';
+                return null;
+            }
+            if (!res.ok) {
+                const err = await res.text();
+                showToast('Error: ' + err);
+                return null;
+            }
+            return await res.json();
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 3000);
+        }
+
+        async function loadStats() {
+            const data = await api('/api/v1/admin/stats');
+            if (!data) return;
+            document.getElementById('stat-users').innerText = data.users;
+            document.getElementById('stat-files').innerText = data.files;
+            document.getElementById('stat-readings').innerText = data.readings;
+            document.getElementById('stat-storage').innerText = formatSize(data.storage_used);
+        }
+
+        async function loadUsers() {
+            const data = await api('/api/v1/admin/users');
+            if (!data) return;
+            const list = document.getElementById('user-list');
+            list.innerHTML = '';
+            data.users.forEach(u => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>
+                        <div style="font-weight: 600;">${u.name || '未设置姓名'}</div>
+                        <div style="font-size: 12px; color: var(--muted);">${u.email}</div>
+                    </td>
+                    <td>
+                        <span class="user-role role-${u.role}">${u.role.toUpperCase()}</span>
+                    </td>
+                    <td>${formatSize(u.storage_used || 0)}</td>
+                    <td>${u.file_count}</td>
+                    <td>${new Date(u.created_at).toLocaleDateString()}</td>
+                    <td style="text-align: right;">
+                        <button class="btn btn-ghost" onclick="promoteUser(${u.id}, '${u.role}')">
+                            ${u.role === 'admin' ? '降级' : '设为管理员'}
+                        </button>
+                    </td>
+                `;
+                list.appendChild(tr);
+            });
+        }
+
+        async function loadSettings() {
+            const data = await api('/api/v1/admin/settings');
+            if (data && data.settings && data.settings.registration) {
+                document.getElementById('setting-registration').checked = data.settings.registration.allow;
+            }
+        }
+
+        async function toggleRegistration(allow) {
+            await api('/api/v1/admin/settings', 'PATCH', {
+                registration: { allow }
+            });
+            showToast('已更新注册设置');
+        }
+
+        async function promoteUser(id, currentRole) {
+            const newRole = currentRole === 'admin' ? 'user' : 'admin';
+            if (!confirm(`确定要将该用户设置为 ${newRole} 吗？`)) return;
+            await api(`/api/v1/admin/users/${id}`, 'PATCH', { role: newRole });
+            showToast('已更新用户角色');
+            loadUsers();
+        }
+
+        function formatSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+        }
+
+        function loadAll() {
+            loadStats();
+            loadUsers();
+            loadSettings();
+        }
+
+        loadAll();
+    </script>
+</body>
+</html>

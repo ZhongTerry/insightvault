@@ -152,6 +152,8 @@
 
         @media (max-width: 700px) {
             .nav { flex-direction: column; align-items: flex-start; }
+            .nav-links { display: flex; flex-wrap: wrap; gap: 10px; }
+            .card { padding: 18px; }
         }
     </style>
 </head>
@@ -167,6 +169,8 @@
                 <span class="nav-links">
                     <a href="/">首页</a>
                     <a href="/app">应用</a>
+                    <a href="/reading">稍后阅读</a>
+                    <a href="/cloud">云盘</a>
                     <a href="/groups">团队</a>
                     <a href="/login" onclick="logout()">退出</a>
                 </span>
@@ -244,6 +248,14 @@
                     <label style="display: flex; align-items: center; gap: 8px;">
                         <input type="checkbox" id="scopeWrite" checked style="width: auto;">
                         <span>写入 (write) - 创建、编辑、删除情报</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="scopeReading" checked style="width: auto;">
+                        <span>阅读库 (reading) - 稍后阅读访问</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="scopeCloud" checked style="width: auto;">
+                        <span>云盘 (cloud) - 文件管理访问</span>
                     </label>
                 </div>
             </div>
@@ -438,6 +450,8 @@
             document.getElementById('newKeyName').value = '';
             document.getElementById('scopeRead').checked = true;
             document.getElementById('scopeWrite').checked = true;
+            document.getElementById('scopeReading').checked = true;
+            document.getElementById('scopeCloud').checked = true;
             document.getElementById('createKeyModal').style.display = 'flex';
         }
 
@@ -455,6 +469,8 @@
             const scopes = [];
             if (document.getElementById('scopeRead').checked) scopes.push('read');
             if (document.getElementById('scopeWrite').checked) scopes.push('write');
+            if (document.getElementById('scopeReading').checked) scopes.push('reading');
+            if (document.getElementById('scopeCloud').checked) scopes.push('cloud');
             
             if (scopes.length === 0) {
                 alert('请至少选择一个权限范围');
