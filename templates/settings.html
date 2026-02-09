@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 设置</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.9);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(247, 108, 79, 0.15), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 900px; margin: 0 auto; padding: 42px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 28px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 26px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .user-pill {
+            padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+            font-size: 12px; color: var(--muted);
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 12px 30px rgba(14, 124, 123, 0.08);
+            animation: rise 0.6s ease-out;
+            margin-bottom: 24px;
+        }
+        h2 {
+            margin-top: 0;
+            font-size: 20px;
+            border-bottom: 1px solid var(--line);
+            padding-bottom: 12px;
+            margin-bottom: 20px;
+        }
+        .form-group {
+            margin-bottom: 16px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 6px;
+            font-weight: 600;
+        }
+        input, select, textarea {
+            width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
+            font-size: 14px; background: #fff; outline: none; font-family: inherit;
+        }
+        button {
+            padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer; font-family: inherit;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+        .btn-accent { background: var(--accent); color: #fff; }
+        .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
+        .btn-small { font-size: 12px; padding: 6px 10px; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .muted { color: var(--muted); font-size: 12px; }
+        .success-msg { background: #d4edda; color: #155724; padding: 10px; border-radius: 8px; margin-bottom: 16px; }
+        .error-msg { background: #f8d7da; color: #721c24; padding: 10px; border-radius: 8px; margin-bottom: 16px; }
+        
+        .api-key-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px; border: 1px solid var(--line); border-radius: 10px;
+            margin-bottom: 10px; background: #fff;
+        }
+        .api-key-info {
+            flex: 1;
+        }
+        .api-key-name {
+            font-weight: 600;
+        }
+        .api-key-prefix {
+            font-family: monospace;
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-left: 8px;
+        }
+        .api-key-meta {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+        
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 12px;
+            font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            z-index: 2000; animation: toastIn 0.3s ease-out;
+        }
+        @keyframes toastIn { from { bottom: 0; opacity: 0; } to { bottom: 24px; opacity: 1; } }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
+            z-index: 1000;
+        }
+        .modal-card {
+            background: var(--bg-1); width: 90%; max-width: 500px; padding: 24px;
+            border-radius: 20px; box-shadow: 0 20px 50px rgba(0,0,0,0.2);
+            max-height: 85vh; overflow-y: auto;
+        }
+        .key-display {
+            background: #f8f9fa;
+            padding: 12px;
+            border: 2px dashed var(--primary);
+            border-radius: 8px;
+            font-family: monospace;
+            word-break: break-all;
+            margin: 12px 0;
+            font-size: 13px;
+        }
+        .warning-box {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 10px;
+            border-radius: 8px;
+            margin: 12px 0;
+            font-size: 13px;
+        }
+
+        @media (max-width: 700px) {
+            .nav { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">个人与团队设置中心</div>
+            </div>
+            <div>
+                <span class="user-pill" id="userPill">未登录</span>
+                <span class="nav-links">
+                    <a href="/">首页</a>
+                    <a href="/app">应用</a>
+                    <a href="/groups">团队</a>
+                    <a href="/login" onclick="logout()">退出</a>
+                </span>
+            </div>
+        </div>
+
+        <!-- 个人资料 -->
+        <div class="card">
+            <h2>个人资料</h2>
+            <div id="profileSuccess" class="success-msg" style="display: none;"></div>
+            <div id="profileError" class="error-msg" style="display: none;"></div>
+            <form onsubmit="updateProfile(event)">
+                <div class="form-group">
+                    <label>名称</label>
+                    <input type="text" id="profileName" placeholder="输入你的名称">
+                </div>
+                <div class="form-group">
+                    <label>邮箱</label>
+                    <input type="email" id="profileEmail" placeholder="your@email.com" required>
+                </div>
+                <button type="submit" class="btn-primary">保存更改</button>
+            </form>
+        </div>
+
+        <!-- 安全设置 -->
+        <div class="card">
+            <h2>安全设置</h2>
+            <div id="passwordSuccess" class="success-msg" style="display: none;"></div>
+            <div id="passwordError" class="error-msg" style="display: none;"></div>
+            <form onsubmit="changePassword(event)">
+                <div class="form-group">
+                    <label>当前密码</label>
+                    <input type="password" id="currentPassword" required>
+                </div>
+                <div class="form-group">
+                    <label>新密码</label>
+                    <input type="password" id="newPassword" required minlength="6">
+                </div>
+                <div class="form-group">
+                    <label>确认新密码</label>
+                    <input type="password" id="confirmPassword" required minlength="6">
+                </div>
+                <button type="submit" class="btn-accent">修改密码</button>
+            </form>
+        </div>
+
+        <!-- API密钥管理 -->
+        <div class="card">
+            <h2>API 密钥管理</h2>
+            <p class="muted">API密钥用于程序化访问InsightVault，请妥善保管。</p>
+            <div style="margin: 16px 0;">
+                <button class="btn-primary" onclick="openCreateKeyModal()">创建新密钥</button>
+            </div>
+            <div id="apiKeysList">
+                <div class="muted">正在加载...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 创建API密钥模态框 -->
+    <div id="createKeyModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <h3>创建新的API密钥</h3>
+            <div class="form-group">
+                <label>密钥名称</label>
+                <input type="text" id="newKeyName" placeholder="例如：开发环境、生产环境">
+            </div>
+            <div class="form-group">
+                <label>权限范围</label>
+                <div style="display: flex; flex-direction: column; gap: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="scopeRead" checked style="width: auto;">
+                        <span>读取 (read) - 查看情报</span>
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="scopeWrite" checked style="width: auto;">
+                        <span>写入 (write) - 创建、编辑、删除情报</span>
+                    </label>
+                </div>
+            </div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+                <button class="btn-ghost" onclick="closeCreateKeyModal()">取消</button>
+                <button class="btn-primary" onclick="createApiKey()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 显示新创建的密钥模态框 -->
+    <div id="showKeyModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <h3>✅ 密钥创建成功</h3>
+            <div class="warning-box">
+                ⚠️ <strong>重要：</strong>请立即复制并妥善保存此密钥，它只会显示一次！
+            </div>
+            <div class="key-display" id="newKeyDisplay"></div>
+            <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 16px;">
+                <button class="btn-primary" onclick="copyKeyToClipboard()">复制密钥</button>
+                <button class="btn-ghost" onclick="closeShowKeyModal()">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let newCreatedKey = '';
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            try {
+                const options = { method };
+                if (body) {
+                    options.headers = { 'Content-Type': 'application/json' };
+                    options.body = JSON.stringify(body);
+                }
+                if (authToken) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+                const res = await fetch(endpoint, options);
+                if (res.status === 401) {
+                    logout();
+                    window.location.href = '/login';
+                    return null;
+                }
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(errorText || `HTTP ${res.status}`);
+                }
+                return await res.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (!res || !res.user) return;
+            currentUser = res.user;
+            document.getElementById('userPill').innerText = currentUser.name || currentUser.email;
+        }
+
+        async function loadProfile() {
+            const res = await apiCall('/api/profile');
+            if (res) {
+                document.getElementById('profileName').value = res.name || '';
+                document.getElementById('profileEmail').value = res.email || '';
+            }
+        }
+
+        async function updateProfile(event) {
+            event.preventDefault();
+            const name = document.getElementById('profileName').value.trim();
+            const email = document.getElementById('profileEmail').value.trim();
+            
+            const successEl = document.getElementById('profileSuccess');
+            const errorEl = document.getElementById('profileError');
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+
+            try {
+                const res = await apiCall('/api/profile', 'PUT', { name, email });
+                if (res && res.status === 'success') {
+                    successEl.textContent = '✓ 个人资料已成功更新';
+                    successEl.style.display = 'block';
+                    await loadMe();
+                }
+            } catch (error) {
+                errorEl.textContent = '✗ 更新失败: ' + error.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function changePassword(event) {
+            event.preventDefault();
+            const current = document.getElementById('currentPassword').value;
+            const newPass = document.getElementById('newPassword').value;
+            const confirm = document.getElementById('confirmPassword').value;
+
+            const successEl = document.getElementById('passwordSuccess');
+            const errorEl = document.getElementById('passwordError');
+            successEl.style.display = 'none';
+            errorEl.style.display = 'none';
+
+            if (newPass !== confirm) {
+                errorEl.textContent = '✗ 两次输入的新密码不一致';
+                errorEl.style.display = 'block';
+                return;
+            }
+
+            try {
+                const res = await apiCall('/api/security/password', 'PUT', {
+                    current_password: current,
+                    new_password: newPass
+                });
+                if (res && res.status === 'success') {
+                    successEl.textContent = '✓ 密码已成功修改';
+                    successEl.style.display = 'block';
+                    document.getElementById('currentPassword').value = '';
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('confirmPassword').value = '';
+                }
+            } catch (error) {
+                errorEl.textContent = '✗ 修改失败: ' + error.message;
+                errorEl.style.display = 'block';
+            }
+        }
+
+        async function loadApiKeys() {
+            const container = document.getElementById('apiKeysList');
+            container.innerHTML = '<div class="muted">正在加载...</div>';
+            
+            try {
+                const res = await apiCall('/api/keys');
+                if (!res || !res.keys) {
+                    container.innerHTML = '<div class="muted">加载失败</div>';
+                    return;
+                }
+                
+                if (res.keys.length === 0) {
+                    container.innerHTML = '<div class="muted">你还没有创建任何API密钥</div>';
+                    return;
+                }
+                
+                container.innerHTML = '';
+                res.keys.forEach(key => {
+                    const div = document.createElement('div');
+                    div.className = 'api-key-item';
+                    
+                    const createdAt = new Date(key.created_at).toLocaleString('zh-CN');
+                    const lastUsed = key.last_used 
+                        ? new Date(key.last_used).toLocaleString('zh-CN')
+                        : '从未使用';
+                    const scopes = Array.isArray(key.scopes) ? key.scopes.join(', ') : key.scopes || 'read, write';
+                    
+                    div.innerHTML = `
+                        <div class="api-key-info">
+                            <div>
+                                <span class="api-key-name">${key.name}</span>
+                                <span class="api-key-prefix">${key.prefix}...</span>
+                            </div>
+                            <div class="api-key-meta">
+                                权限: ${scopes} | 创建于: ${createdAt} | 最后使用: ${lastUsed}
+                            </div>
+                        </div>
+                        <button class="btn-danger btn-small" onclick="deleteApiKey(${key.id}, '${key.name}')">删除</button>
+                    `;
+                    container.appendChild(div);
+                });
+            } catch (error) {
+                container.innerHTML = '<div class="muted">加载失败: ' + error.message + '</div>';
+            }
+        }
+
+        function openCreateKeyModal() {
+            document.getElementById('newKeyName').value = '';
+            document.getElementById('scopeRead').checked = true;
+            document.getElementById('scopeWrite').checked = true;
+            document.getElementById('createKeyModal').style.display = 'flex';
+        }
+
+        function closeCreateKeyModal() {
+            document.getElementById('createKeyModal').style.display = 'none';
+        }
+
+        async function createApiKey() {
+            const name = document.getElementById('newKeyName').value.trim();
+            if (!name) {
+                alert('请输入密钥名称');
+                return;
+            }
+            
+            const scopes = [];
+            if (document.getElementById('scopeRead').checked) scopes.push('read');
+            if (document.getElementById('scopeWrite').checked) scopes.push('write');
+            
+            if (scopes.length === 0) {
+                alert('请至少选择一个权限范围');
+                return;
+            }
+            
+            try {
+                const res = await apiCall('/api/keys', 'POST', { name, scopes });
+                if (res && res.status === 'success') {
+                    closeCreateKeyModal();
+                    newCreatedKey = res.key;
+                    document.getElementById('newKeyDisplay').textContent = res.key;
+                    document.getElementById('showKeyModal').style.display = 'flex';
+                    await loadApiKeys();
+                }
+            } catch (error) {
+                alert('创建失败: ' + error.message);
+            }
+        }
+
+        function closeShowKeyModal() {
+            document.getElementById('showKeyModal').style.display = 'none';
+            newCreatedKey = '';
+        }
+
+        function copyKeyToClipboard() {
+            if (navigator.clipboard && newCreatedKey) {
+                navigator.clipboard.writeText(newCreatedKey).then(() => {
+                    showToast('✓ 密钥已复制到剪贴板');
+                }).catch(() => {
+                    alert('复制失败，请手动复制');
+                });
+            }
+        }
+
+        async function deleteApiKey(keyId, keyName) {
+            if (!confirm(`确定要删除密钥「${keyName}」吗？此操作不可撤销。`)) return;
+            
+            try {
+                const res = await apiCall(`/api/keys/${keyId}`, 'DELETE');
+                if (res && res.status === 'success') {
+                    showToast('✓ 密钥已删除');
+                    await loadApiKeys();
+                }
+            } catch (error) {
+                alert('删除失败: ' + error.message);
+            }
+        }
+
+        window.onload = async () => {
+            if (!authToken) {
+                window.location.href = '/login';
+                return;
+            }
+            await loadMe();
+            await loadProfile();
+            await loadApiKeys();
+        };
+    </script>
+</body>
+</html>

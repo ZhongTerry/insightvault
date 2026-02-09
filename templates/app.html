@@ -136,6 +136,7 @@
                     <a href="/">首页</a>
                     <a href="/groups">团队</a>
                     <a href="#" onclick="openManageTagsModal()">标签管理</a>
+                    <a href="/settings">设置</a>
                     <a href="/login" onclick="logout()">退出</a>
                 </span>
             </div>
@@ -152,7 +153,8 @@
                 </select>
             </div>
             <div id="freeInputArea" class="row">
-                <textarea id="addInput" placeholder="记录新的灵感、情报或链接..." onkeydown="handleKeydown(event, addData)"></textarea>
+                <input id="addTitle" placeholder="标题（可选）" style="margin-bottom: 8px;">
+                <textarea id="addInput" placeholder="记录新的灵感、情报或链接（支持Markdown）..." onkeydown="handleKeydown(event, addData)"></textarea>
             </div>
             <div id="templateInputArea" style="display: none;">
                 <!-- 模板输入框将动态生成 -->
@@ -188,30 +190,6 @@
             <button id="prevBtn" class="btn-ghost" onclick="changePage(-1)">上一页</button>
             <span id="pageInfo" class="muted">第 1 页</span>
             <button id="nextBtn" class="btn-ghost" onclick="changePage(1)">下一页</button>
-        </div>
-    </div>
-
-    <!-- Edit Modal -->
-    <div id="editModal" class="modal-overlay" style="display: none;">
-        <div class="modal-card">
-            <h3>编辑情报</h3>
-            <div class="row">
-                <textarea id="editContentInput" placeholder="请输入内容..." onkeydown="handleKeydown(event, saveEdit)"></textarea>
-            </div>
-            <div class="row">
-                <input id="editTagsInput" placeholder="标签 (逗号分隔)">
-                <select id="editVisibilitySelect" onchange="onEditVisibilityChange()">
-                    <option value="private">仅自己</option>
-                    <option value="group">团队共享</option>
-                </select>
-                <select id="editGroupSelect">
-                    <option value="">选择团队</option>
-                </select>
-            </div>
-            <div class="row" style="justify-content: flex-end; margin-top: 12px;">
-                <button class="btn-ghost" onclick="closeEditModal()">取消</button>
-                <button class="btn-primary" onclick="saveEdit()">保存</button>
-            </div>
         </div>
     </div>
 
@@ -262,7 +240,10 @@
                     { key: 'category', label: '分类', type: 'input', placeholder: '输入分类' },
                     { key: 'detail', label: '详细说明', type: 'textarea', placeholder: '输入详细信息' }
                 ],
-                format: (data) => `${data.name} 是一个关于 ${data.category} 的条目，具体细节如下：${data.detail}。`
+                format: (data) => ({
+                    title: `条目：${data.name}`,
+                    content: `${data.name} 是一个关于 ${data.category} 的条目，具体细节如下：\n\n${data.detail}`
+                })
             },
             book_note: {
                 name: '读书笔记模板',
@@ -273,7 +254,10 @@
                     { key: 'quote', label: '摘录', type: 'textarea', placeholder: '书中的原文或要点' },
                     { key: 'reflection', label: '感悟', type: 'textarea', placeholder: '你的思考和心得' }
                 ],
-                format: (data) => `《${data.book_title}》（作者：${data.author}）\n章节：${data.chapter}\n\n摘录：${data.quote}\n\n感悟：${data.reflection}`
+                format: (data) => ({
+                    title: `读《${data.book_title}》有感`,
+                    content: `## 读书笔记\n\n**书名**：${data.book_title}\n**作者**：${data.author}\n**章节**：${data.chapter}\n\n### 摘录\n> ${data.quote}\n\n### 我的感悟\n${data.reflection}`
+                })
             },
             meeting_record: {
                 name: '会议记录模板',
@@ -284,7 +268,10 @@
                     { key: 'summary', label: '会议要点', type: 'textarea', placeholder: '讨论的主要内容' },
                     { key: 'action_items', label: '行动项', type: 'textarea', placeholder: '待办事项和责任人' }
                 ],
-                format: (data) => `会议主题：${data.meeting_title}\n日期：${data.date}\n参会人员：${data.participants}\n\n会议要点：\n${data.summary}\n\n行动项：\n${data.action_items}`
+                format: (data) => ({
+                    title: `会议记录：${data.meeting_title}`,
+                    content: `## 会议信息\n- **日期**：${data.date}\n- **主要人员**：${data.participants}\n\n## 会议要点\n${data.summary}\n\n## 行动项\n${data.action_items}`
+                })
             },
             problem_record: {
                 name: '错题记录模板',
@@ -294,7 +281,10 @@
                     { key: 'wrong_reason', label: '错误原因', type: 'input', placeholder: '如：概念不清、粗心、逻辑错误等' },
                     { key: 'solution', label: '解析与总结', type: 'textarea', placeholder: '正确解法、相关知识点及避坑指南' }
                 ],
-                format: (data) => `【错题本】\n科目：${data.subject}\n\n题目：\n${data.question}\n\n错误原因：${data.wrong_reason}\n\n解析总结：\n${data.solution}`
+                format: (data) => ({
+                    title: `【错题本】${data.subject} - ${data.question.substring(0, 15)}...`,
+                    content: `### 题目内容\n${data.question}\n\n### 错误原因\n${data.wrong_reason}\n\n### 正确解析与总结\n${data.solution}`
+                })
             }
         };
 
@@ -342,7 +332,10 @@
 
         function getTemplateContent() {
             if (currentTemplate === 'none') {
-                return document.getElementById('addInput').value;
+                return {
+                    title: document.getElementById('addTitle').value.trim() || '未命名 intelligence',
+                    content: document.getElementById('addInput').value.trim()
+                };
             }
             
             const template = templates[currentTemplate];
@@ -350,7 +343,8 @@
             
             // 收集模板字段数据
             for (const field of template.fields) {
-                const value = document.getElementById(`tmpl_${field.key}`).value.trim();
+                const elem = document.getElementById(`tmpl_${field.key}`);
+                const value = elem ? elem.value.trim() : '';
                 if (!value) {
                     alert(`请填写「${field.label}」`);
                     return null;
@@ -358,11 +352,12 @@
                 data[field.key] = value;
             }
             
-            // 使用模板格式化函数生成内容
+            // 使用模板格式化函数生成标题和内容
             return template.format(data);
         }
 
         function clearTemplateInputs() {
+            document.getElementById('addTitle').value = '';
             if (currentTemplate === 'none') {
                 document.getElementById('addInput').value = '';
             } else {
@@ -459,41 +454,69 @@
             currentPage = page;
 
             document.getElementById('loader').style.display = 'block';
-            const data = await apiCall(`/api/search?type=${type}&q=${q}&page=${page}`);
+            const res = await apiCall(`/api/v1/items?type=${type}&q=${encodeURIComponent(q)}&page=${page}&per_page=10`);
             const container = document.getElementById('results');
             document.getElementById('loader').style.display = 'none';
 
-            if (!Array.isArray(data)) {
+            if (!res || !res.data) {
                 container.innerHTML = '<div class="muted">加载失败</div>';
                 return;
             }
+            
+            const data = res.data;
             container.innerHTML = data.length ? '' : '<div class="muted">无内容</div>';
 
             data.forEach(item => {
+                const createdAt = new Date(item.created_at).toLocaleString('zh-CN');
                 const scoreStr = item.score ? `<span class="score">匹配度 ${(item.score * 100).toFixed(1)}%</span>` : '';
-                const visStr = item.visibility === 'group'
-                    ? `<span class="tag">团队: ${item.group_name || '未命名'}</span>`
-                    : `<span class="tag">私有</span>`;
-                const tagsArr = Array.isArray(item.tags) ? item.tags : [];
-                const tagsStr = tagsArr.map(tag => `<span class="tag">#${tag}</span>`).join(' ');
-                const tagsRaw = tagsArr.join(', ');
-                container.innerHTML += `
-                    <div class="item" id="item-${item.id}">
-                        <div>${item.content}</div>
-                        <div class="item-meta">
-                            <span>${item.created_at} ${scoreStr} ${visStr} ${tagsStr}</span>
-                            <span>
-                                <button class="btn-ghost btn-small" onclick="editItem(${item.id}, \`${item.content.replace(/`/g, '\\`')}\`, '${item.visibility}', ${item.group_id || 'null'}, \`${tagsRaw.replace(/`/g, '\\`')}\`)" >编辑</button>
-                                <button class="btn-ghost btn-small" onclick="deleteItem(${item.id})">删除</button>
-                            </span>
-                        </div>
+                
+                const itemEl = document.createElement('div');
+                itemEl.className = 'item';
+                itemEl.id = `item-${item.id}`;
+                itemEl.style.cursor = 'pointer';
+                itemEl.onclick = () => viewDetail(item.id);
+                
+                // 创建结构
+                itemEl.innerHTML = `
+                    <div class="item-title" style="font-weight: 600; font-size: 16px; margin-bottom: 8px;"></div>
+                    <div class="item-preview" style="color: var(--muted); margin-bottom: 8px;"></div>
+                    <div class="item-meta" style="font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span>${createdAt}</span>
+                        ${scoreStr}
+                        <span class="vis-pill"></span>
+                        <span class="tags-container"></span>
                     </div>
                 `;
+                
+                // 填充纯文本内容（防XSS）
+                itemEl.querySelector('.item-title').textContent = item.title || '无标题';
+                itemEl.querySelector('.item-preview').textContent = (item.content_preview || item.content || '') + '...';
+                
+                // 填充可见性
+                const visPill = itemEl.querySelector('.vis-pill');
+                visPill.className = 'tag';
+                visPill.textContent = item.visibility === 'group' ? `团队: ${item.group_name || '未命名'}` : '私有';
+                
+                // 填充标签
+                const tagsContainer = itemEl.querySelector('.tags-container');
+                const tagsArr = Array.isArray(item.tags) ? item.tags : [];
+                tagsArr.forEach(t => {
+                    const ts = document.createElement('span');
+                    ts.className = 'tag';
+                    ts.textContent = '#' + t;
+                    tagsContainer.appendChild(ts);
+                });
+                
+                container.appendChild(itemEl);
             });
 
             document.getElementById('pageInfo').innerText = `第 ${page} 页`;
             document.getElementById('prevBtn').disabled = (page === 1);
-            document.getElementById('nextBtn').disabled = (data.length < 10);
+            document.getElementById('nextBtn').disabled = !res.pagination.has_more;
+        }
+
+        function viewDetail(id) {
+            window.location.href = `/detail?id=${id}`;
         }
 
         function doSearch(type) {
@@ -502,8 +525,10 @@
         }
 
         async function addData() {
-            const content = getTemplateContent();
-            if (!content) return;
+            const templateRes = getTemplateContent();
+            if (!templateRes) return;
+            const { title, content } = templateRes;
+            if (!content) return alert('内容不能为空');
             
             const visibility = document.getElementById('visibilitySelect').value;
             const groupId = document.getElementById('groupSelect').value || null;
@@ -517,7 +542,8 @@
             btn.innerText = '正在存入...';
 
             try {
-                const res = await apiCall('/api/add', 'POST', {
+                const res = await apiCall('/api/v1/items', 'POST', {
+                    title,
                     content,
                     visibility,
                     group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
@@ -526,6 +552,7 @@
                 
                 if (res && res.status === 'success') {
                     showToast('已存入情报 ✨');
+                    document.getElementById('addTitle').value = '';
                     clearTemplateInputs();
                     document.getElementById('tagsInput').value = '';
                     render('all', '', 1);
@@ -533,65 +560,6 @@
             } finally {
                 btn.disabled = false;
                 btn.innerText = originalText;
-            }
-        }
-
-        let editingId = null;
-
-        async function editItem(id, oldContent, oldVisibility, oldGroupId, oldTags) {
-            editingId = id;
-            document.getElementById('editContentInput').value = oldContent;
-            document.getElementById('editTagsInput').value = oldTags || '';
-            document.getElementById('editVisibilitySelect').value = oldVisibility || 'private';
-            
-            // Populate groups in modal
-            const select = document.getElementById('editGroupSelect');
-            select.innerHTML = '<option value="">选择团队</option>';
-            currentGroups.forEach(g => {
-                const opt = document.createElement('option');
-                opt.value = g.group_id;
-                opt.textContent = `${g.name} (${g.role})`;
-                if (g.group_id == oldGroupId) opt.selected = true;
-                select.appendChild(opt);
-            });
-            
-            onEditVisibilityChange();
-            document.getElementById('editModal').style.display = 'flex';
-        }
-
-        function onEditVisibilityChange() {
-            const visibility = document.getElementById('editVisibilitySelect').value;
-            document.getElementById('editGroupSelect').disabled = (visibility !== 'group');
-        }
-
-        function closeEditModal() {
-            document.getElementById('editModal').style.display = 'none';
-        }
-
-        async function saveEdit() {
-            const id = editingId;
-            const content = document.getElementById('editContentInput').value;
-            const visibility = document.getElementById('editVisibilitySelect').value;
-            const groupId = document.getElementById('editGroupSelect').value || null;
-            const tags = document.getElementById('editTagsInput').value;
-
-            if (!content.trim()) return alert('内容不能为空');
-            if (visibility === 'group' && !groupId) return alert('请选择团队');
-
-            const res = await apiCall(`/api/update/${id}`, 'PUT', {
-                content, visibility, group_id: visibility === 'group' ? parseInt(groupId, 10) : null, tags
-            });
-            if (res && res.status === 'success') {
-                closeEditModal();
-                render(currentType, currentQuery, currentPage);
-            }
-        }
-
-        async function deleteItem(id) {
-            if (!confirm('确定要删除这条情报吗？')) return;
-            const res = await apiCall(`/api/delete/${id}`, 'DELETE');
-            if (res && res.status === 'success') {
-                render(currentType, currentQuery, currentPage);
             }
         }
 

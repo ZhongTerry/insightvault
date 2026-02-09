@@ -200,6 +200,21 @@ async def lifespan(app: FastAPI):
                     PRIMARY KEY (item_id, tag_id)
                 );
             """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_api_keys (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                    key_name TEXT NOT NULL,
+                    key_hash TEXT NOT NULL,
+                    key_prefix TEXT NOT NULL,
+                    scopes TEXT NOT NULL DEFAULT 'read,write',
+                    last_used TIMESTAMP WITH TIME ZONE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_user ON user_api_keys (user_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON user_api_keys (key_hash);")
+            await conn.execute("ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS scopes TEXT NOT NULL DEFAULT 'read,write';")
             
             # 强力同步数据库维度
             try:
@@ -228,6 +243,7 @@ async def lifespan(app: FastAPI):
             await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS intelligence_vault (
                     id SERIAL PRIMARY KEY,
+                    title TEXT,
                     content TEXT NOT NULL,
                     embedding vector({detected_dim}),
                     owner_user_id INTEGER REFERENCES users(id),
@@ -236,6 +252,7 @@ async def lifespan(app: FastAPI):
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS title TEXT;")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id);")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private';")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES groups(id);")
@@ -319,6 +336,79 @@ async def get_current_user(request: Request) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return dict(user)
+
+async def get_current_user_or_api_key(request: Request) -> dict:
+    """支持JWT token或API key认证"""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    
+    token = auth.split(" ", 1)[1].strip()
+    
+    # 尝试作为JWT解析
+    try:
+        payload = decode_access_token(token)
+        user_id = int(payload.get("sub", 0))
+        
+        async with request.app.state.db_pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute("SELECT id, email, name, role FROM users WHERE id = %s", (user_id,))
+                user = await cur.fetchone()
+        
+        if user:
+            user_dict = dict(user)
+            user_dict['auth_type'] = 'jwt'
+            user_dict['scopes'] = ['full']  # JWT has full access
+            return user_dict
+    except:
+        pass
+    
+    # 尝试作为API key解析
+    key_hash = hashlib.sha256(token.encode()).hexdigest()
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT ak.user_id, ak.scopes, u.email, u.name, u.role
+                FROM user_api_keys ak
+                JOIN users u ON u.id = ak.user_id
+                WHERE ak.key_hash = %s
+                """,
+                (key_hash,)
+            )
+            api_key_record = await cur.fetchone()
+            
+            if api_key_record:
+                # 更新最后使用时间
+                await cur.execute(
+                    "UPDATE user_api_keys SET last_used = CURRENT_TIMESTAMP WHERE key_hash = %s",
+                    (key_hash,)
+                )
+                
+                scopes = api_key_record['scopes'].split(',') if api_key_record['scopes'] else []
+                return {
+                    'id': api_key_record['user_id'],
+                    'email': api_key_record['email'],
+                    'name': api_key_record['name'],
+                    'role': api_key_record['role'],
+                    'auth_type': 'api_key',
+                    'scopes': scopes
+                }
+    
+    raise HTTPException(status_code=401, detail="Invalid token or API key")
+
+def require_scope(required_scope: str):
+    """检查用户是否有特定权限"""
+    async def checker(user: dict = Depends(get_current_user_or_api_key)) -> dict:
+        if user.get('auth_type') == 'jwt':
+            return user  # JWT has full access
+        
+        scopes = user.get('scopes', [])
+        if required_scope not in scopes and 'full' not in scopes:
+            raise HTTPException(status_code=403, detail=f"Scope '{required_scope}' required")
+        return user
+    return checker
 
 async def require_admin(user: dict) -> dict:
     if user.get("role") != "admin":
@@ -437,7 +527,7 @@ async def fetch_data(
                 if search_type == 'ai' and query_vec:
                     # 显式使用 [..]::vector 进行类型转换，确保 pgvector 正确识别
                     await cur.execute("""
-                        SELECT iv.id, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name
@@ -454,7 +544,7 @@ async def fetch_data(
                     """, (json.dumps(query_vec), user_id, group_ids, PER_PAGE, offset))
                 elif search_type == 'key' and query:
                     await cur.execute("""
-                        SELECT iv.id, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name
@@ -465,13 +555,13 @@ async def fetch_data(
                                ) AS tags
                         FROM intelligence_vault iv
                         LEFT JOIN groups g ON g.id = iv.group_id
-                        WHERE iv.content ILIKE %s AND """ + access_sql + """
+                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + """
                         ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
-                    """, (f'%{query}%', user_id, group_ids, PER_PAGE, offset))
+                    """, (f'%{query}%', f'%{query}%', user_id, group_ids, PER_PAGE, offset))
                 elif search_type == 'tag' and query:
                     tag = query.strip().lower()
                     await cur.execute("""
-                        SELECT iv.id, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name
@@ -492,7 +582,7 @@ async def fetch_data(
                     """, (user_id, group_ids, tag, PER_PAGE, offset))
                 else:
                     await cur.execute("""
-                        SELECT iv.id, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                        SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name
@@ -820,6 +910,14 @@ async def app_page(request: Request):
 async def groups_page(request: Request):
     return templates.TemplateResponse("groups.html", {"request": request})
 
+@app.get("/settings")
+async def settings_page(request: Request):
+    return templates.TemplateResponse("settings.html", {"request": request})
+
+@app.get("/detail")
+async def detail_page(request: Request):
+    return templates.TemplateResponse("detail.html", {"request": request})
+
 @app.get("/api/search")
 async def api_search(request: Request, type: str = 'all', q: str = '', page: int = 1, user: dict = Depends(get_current_user)):
     with Profiler() as p_total:
@@ -987,6 +1085,440 @@ async def api_revectorize_all(request: Request, background_tasks: BackgroundTask
     # 立即返回，后台执行
     background_tasks.add_task(background_revectorize, request.app.state.db_pool)
     return {"status": "success", "message": "Task started in background"}
+
+# --- REST API v1 (新版API with proper REST conventions) ---
+
+@app.get("/api/v1/items")
+async def api_v1_list_items(
+    request: Request,
+    type: str = 'all',
+    q: str = '',
+    page: int = 1,
+    per_page: int = Query(default=10, le=100),
+    user: dict = Depends(require_scope('read'))
+):
+    """列出情报项目（支持搜索和分页）"""
+    with Profiler() as p_total:
+        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+        
+        offset = (page - 1) * per_page
+        results = []
+        
+        query_vec = None
+        if type == 'ai' and q:
+            query_vec = await get_embedding(q)
+        
+        async with request.app.state.db_pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+                
+                if type == 'ai' and query_vec:
+                    await cur.execute("""
+                        SELECT iv.id, iv.title, 
+                               LEFT(iv.content, 200) as content_preview,
+                               iv.created_at, iv.visibility, iv.group_id,
+                               g.name AS group_name,
+                               ARRAY(
+                                   SELECT t.name FROM item_tags it
+                                   JOIN tags t ON t.id = it.tag_id
+                                   WHERE it.item_id = iv.id
+                                   ORDER BY t.name
+                               ) AS tags,
+                               1 - (iv.embedding <=> %s::vector) AS score
+                        FROM intelligence_vault iv
+                        LEFT JOIN groups g ON g.id = iv.group_id
+                        WHERE """ + access_sql + """
+                        ORDER BY score DESC LIMIT %s OFFSET %s
+                    """, (json.dumps(query_vec), user["id"], list(group_roles.keys()), per_page, offset))
+                elif type == 'key' and q:
+                    await cur.execute("""
+                        SELECT iv.id, iv.title,
+                               LEFT(iv.content, 200) as content_preview,
+                               iv.created_at, iv.visibility, iv.group_id,
+                               g.name AS group_name,
+                               ARRAY(
+                                   SELECT t.name FROM item_tags it
+                                   JOIN tags t ON t.id = it.tag_id
+                                   WHERE it.item_id = iv.id
+                                   ORDER BY t.name
+                               ) AS tags
+                        FROM intelligence_vault iv
+                        LEFT JOIN groups g ON g.id = iv.group_id
+                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + """
+                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
+                    """, (f'%{q}%', f'%{q}%', user["id"], list(group_roles.keys()), per_page, offset))
+                else:
+                    await cur.execute("""
+                        SELECT iv.id, iv.title,
+                               LEFT(iv.content, 200) as content_preview,
+                               iv.created_at, iv.visibility, iv.group_id,
+                               g.name AS group_name,
+                               ARRAY(
+                                   SELECT t.name FROM item_tags it
+                                   JOIN tags t ON t.id = it.tag_id
+                                   WHERE it.item_id = iv.id
+                                   ORDER BY t.name
+                               ) AS tags
+                        FROM intelligence_vault iv
+                        LEFT JOIN groups g ON g.id = iv.group_id
+                        WHERE """ + access_sql + """
+                        ORDER BY iv.created_at DESC LIMIT %s OFFSET %s
+                    """, (user["id"], list(group_roles.keys()), per_page, offset))
+                
+                rows = await cur.fetchall()
+                results = [dict(row) for row in rows]
+        
+        for r in results:
+            if isinstance(r['created_at'], datetime):
+                r['created_at'] = r['created_at'].isoformat()
+    
+    logger.info(f">>> v1 搜索请求总响应时间: {p_total.duration:.2f}ms")
+    return {
+        "status": "success",
+        "data": results,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "has_more": len(results) == per_page
+        }
+    }
+
+@app.get("/api/v1/items/{item_id}")
+async def api_v1_get_item(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('read'))
+):
+    """获取单个情报项目详情"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                       iv.owner_user_id, u.name as owner_name,
+                       g.name AS group_name,
+                       ARRAY(
+                           SELECT t.name FROM item_tags it
+                           JOIN tags t ON t.id = it.tag_id
+                           WHERE it.item_id = iv.id
+                           ORDER BY t.name
+                       ) AS tags
+                FROM intelligence_vault iv
+                LEFT JOIN groups g ON g.id = iv.group_id
+                LEFT JOIN users u ON u.id = iv.owner_user_id
+                WHERE iv.id = %s
+            """, (item_id,))
+            item = await cur.fetchone()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    item_dict = dict(item)
+    
+    # 权限检查
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    if item_dict['owner_user_id'] != user["id"]:
+        if item_dict['visibility'] != 'group' or item_dict['group_id'] not in group_roles:
+            raise HTTPException(status_code=403, detail="No access to this item")
+    
+    if isinstance(item_dict['created_at'], datetime):
+        item_dict['created_at'] = item_dict['created_at'].isoformat()
+    
+    return {"status": "success", "data": item_dict}
+
+@app.post("/api/v1/items")
+async def api_v1_create_item(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """创建新的情报项目"""
+    title = (data.get('title') or '').strip()
+    content = data.get('content', '').strip()
+    visibility = (data.get("visibility") or "private").strip()
+    group_id = data.get("group_id")
+    tags_input = data.get("tags")
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+    if visibility not in ("private", "group"):
+        raise HTTPException(status_code=400, detail="Visibility must be 'private' or 'group'")
+    
+    if visibility == "group":
+        if not group_id:
+            raise HTTPException(status_code=400, detail="group_id is required for group visibility")
+        group_id = int(group_id)
+        group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+        if group_id not in group_roles:
+            raise HTTPException(status_code=403, detail="Not a member of the group")
+    else:
+        group_id = None
+    
+    vec = await get_embedding(title + ' ' + content if title else content)
+    tags = normalize_tags(tags_input)
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO intelligence_vault (title, content, embedding, owner_user_id, visibility, group_id)
+                VALUES (%s, %s, %s::vector, %s, %s, %s)
+                RETURNING id
+                """,
+                (title or None, content, json.dumps(vec), user["id"], visibility, group_id)
+            )
+            row = await cur.fetchone()
+            item_id = row["id"]
+    
+    await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
+    
+    return {"status": "success", "data": {"id": item_id}}
+
+@app.put("/api/v1/items/{item_id}")
+async def api_v1_update_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """更新情报项目"""
+    title = (data.get('title') or '').strip()
+    content = data.get('content', '').strip()
+    visibility = (data.get("visibility") or "private").strip()
+    group_id = data.get("group_id")
+    tags_input = data.get("tags", None)
+    
+    if not content:
+        raise HTTPException(status_code=400, detail="Content is required")
+    if visibility not in ("private", "group"):
+        raise HTTPException(status_code=400, detail="Visibility must be 'private' or 'group'")
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, owner_user_id FROM intelligence_vault WHERE id = %s",
+                (item_id,)
+            )
+            item = await cur.fetchone()
+            if not item:
+                raise HTTPException(status_code=404, detail="Item not found")
+            if item["owner_user_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="No permission to update")
+            
+            if visibility == "group":
+                if not group_id:
+                    raise HTTPException(status_code=400, detail="group_id is required for group visibility")
+                group_id = int(group_id)
+                group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+                if group_id not in group_roles:
+                    raise HTTPException(status_code=403, detail="Not a member of the group")
+            else:
+                group_id = None
+            
+            new_vec = await get_embedding(title + ' ' + content if title else content)
+            await cur.execute(
+                """
+                UPDATE intelligence_vault
+                SET title = %s, content = %s, embedding = %s::vector, visibility = %s, group_id = %s
+                WHERE id = %s
+                """,
+                (title or None, content, json.dumps(new_vec), visibility, group_id, item_id)
+            )
+    
+    if tags_input is not None:
+        tags = normalize_tags(tags_input)
+        await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
+    
+    return {"status": "success"}
+
+@app.delete("/api/v1/items/{item_id}")
+async def api_v1_delete_item(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('write'))
+):
+    """删除情报项目"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id, owner_user_id FROM intelligence_vault WHERE id = %s",
+                (item_id,)
+            )
+            item = await cur.fetchone()
+            if not item:
+                raise HTTPException(status_code=404, detail="Item not found")
+            if item["owner_user_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="No permission to delete")
+            
+            await cur.execute("DELETE FROM intelligence_vault WHERE id = %s", (item_id,))
+    
+    return {"status": "success"}
+
+# --- 5. API密钥管理 ---
+
+def generate_api_key() -> tuple[str, str, str]:
+    """生成API密钥，返回 (完整密钥, 密钥hash, 前缀)"""
+    raw_key = secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+    key_prefix = raw_key[:8]
+    return raw_key, key_hash, key_prefix
+
+@app.get("/api/keys")
+async def api_list_keys(request: Request, user: dict = Depends(get_current_user)):
+    """列出用户的所有API密钥（不显示完整密钥）"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id, key_name, key_prefix, scopes, last_used, created_at
+                FROM user_api_keys
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                """,
+                (user["id"],)
+            )
+            keys = await cur.fetchall()
+    
+    result = []
+    for k in keys:
+        result.append({
+            "id": k["id"],
+            "name": k["key_name"],
+            "prefix": k["key_prefix"],
+            "scopes": k["scopes"].split(',') if k["scopes"] else [],
+            "last_used": k["last_used"].isoformat() if k["last_used"] else None,
+            "created_at": k["created_at"].isoformat()
+        })
+    return {"keys": result}
+
+@app.post("/api/keys")
+async def api_create_key(request: Request, data: dict, user: dict = Depends(get_current_user)):
+    """创建新的API密钥"""
+    key_name = (data.get("name") or "").strip()
+    scopes_list = data.get("scopes", ["read", "write"])  # 默认读写权限
+    
+    if not key_name:
+        raise HTTPException(status_code=400, detail="Key name is required")
+    
+    # 验证scopes
+    valid_scopes = {"read", "write", "admin"}
+    if not isinstance(scopes_list, list):
+        raise HTTPException(status_code=400, detail="Scopes must be an array")
+    
+    for scope in scopes_list:
+        if scope not in valid_scopes:
+            raise HTTPException(status_code=400, detail=f"Invalid scope: {scope}")
+    
+    scopes_str = ','.join(scopes_list)
+    raw_key, key_hash, key_prefix = generate_api_key()
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO user_api_keys (user_id, key_name, key_hash, key_prefix, scopes)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (user["id"], key_name, key_hash, key_prefix, scopes_str)
+            )
+            key_record = await cur.fetchone()
+    
+    return {
+        "status": "success",
+        "key": raw_key,
+        "key_id": key_record["id"],
+        "scopes": scopes_list,
+        "message": "请妥善保存此密钥，它只会显示一次"
+    }
+
+@app.delete("/api/keys/{key_id}")
+async def api_delete_key(request: Request, key_id: int, user: dict = Depends(get_current_user)):
+    """删除API密钥"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id FROM user_api_keys WHERE id = %s AND user_id = %s",
+                (key_id, user["id"])
+            )
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Key not found")
+            
+            await cur.execute(
+                "DELETE FROM user_api_keys WHERE id = %s",
+                (key_id,)
+            )
+    
+    return {"status": "success"}
+
+# --- 6. 个人资料和安全设置 ---
+
+@app.get("/api/profile")
+async def api_get_profile(user: dict = Depends(get_current_user)):
+    """获取用户个人资料"""
+    return {
+        "id": user["id"],
+        "email": user["email"],
+        "name": user["name"],
+        "role": user["role"]
+    }
+
+@app.put("/api/profile")
+async def api_update_profile(request: Request, data: dict, user: dict = Depends(get_current_user)):
+    """更新用户个人资料"""
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            # 检查邮箱是否被其他用户占用
+            if email != user["email"]:
+                await cur.execute(
+                    "SELECT id FROM users WHERE email = %s AND id != %s",
+                    (email, user["id"])
+                )
+                if await cur.fetchone():
+                    raise HTTPException(status_code=409, detail="Email already in use")
+            
+            await cur.execute(
+                "UPDATE users SET name = %s, email = %s WHERE id = %s",
+                (name or None, email, user["id"])
+            )
+    
+    return {"status": "success", "message": "个人资料已更新"}
+
+@app.put("/api/security/password")
+async def api_change_password(request: Request, data: dict, user: dict = Depends(get_current_user)):
+    """修改密码"""
+    current_password = data.get("current_password", "")
+    new_password = data.get("new_password", "")
+    
+    if not current_password or not new_password:
+        raise HTTPException(status_code=400, detail="Current and new passwords are required")
+    
+    if len(new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT password_hash, password_salt FROM users WHERE id = %s",
+                (user["id"],)
+            )
+            user_data = await cur.fetchone()
+            
+            if not verify_password(current_password, user_data["password_salt"], user_data["password_hash"]):
+                raise HTTPException(status_code=401, detail="Current password is incorrect")
+            
+            pw = hash_password(new_password)
+            await cur.execute(
+                "UPDATE users SET password_hash = %s, password_salt = %s WHERE id = %s",
+                (pw["hash"], pw["salt"], user["id"])
+            )
+    
+    return {"status": "success", "message": "密码已成功修改"}
 
 if __name__ == '__main__':
     import uvicorn

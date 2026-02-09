@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 详情</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.9);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(247, 108, 79, 0.15), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 900px; margin: 0 auto; padding: 42px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 28px;
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 26px; letter-spacing: 0.5px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+        }
+        .user-pill {
+            padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
+            font-size: 12px; color: var(--muted);
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 16px;
+            padding: 28px;
+            box-shadow: 0 12px 30px rgba(14, 124, 123, 0.08);
+            animation: rise 0.6s ease-out;
+            margin-bottom: 24px;
+        }
+        .detail-title {
+            font-size: 28px;
+            font-weight: 700;
+            margin: 0 0 16px 0;
+            color: var(--ink);
+        }
+        .detail-meta {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 24px;
+            padding-bottom: 16px;
+            border-bottom: 1px solid var(--line);
+        }
+        .detail-meta span {
+            margin-right: 16px;
+        }
+        .tag {
+            font-size: 11px; background: #f0f0f0; padding: 3px 8px; border-radius: 6px; margin-right: 6px;
+            display: inline-block;
+        }
+        .detail-content {
+            line-height: 1.7;
+            font-size: 15px;
+        }
+        /* Markdown样式 */
+        .detail-content h1 { font-size: 24px; margin: 24px 0 12px; }
+        .detail-content h2 { font-size: 20px; margin: 20px 0 10px; }
+        .detail-content h3 { font-size: 18px; margin: 18px 0 8px; }
+        .detail-content p { margin: 12px 0; }
+        .detail-content pre {
+            background: #f5f5f5;
+            padding: 12px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+        }
+        .detail-content code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+        .detail-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .detail-content blockquote {
+            border-left: 4px solid var(--primary);
+            padding-left: 16px;
+            margin: 16px 0;
+            color: var(--muted);
+        }
+        .detail-content ul, .detail-content ol {
+            padding-left: 24px;
+        }
+        .detail-content a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        .detail-content a:hover {
+            text-decoration: underline;
+        }
+        .detail-content img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 16px 0;
+        }
+        .detail-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }
+        .detail-content table th,
+        .detail-content table td {
+            border: 1px solid var(--line);
+            padding: 8px;
+            text-align: left;
+        }
+        .detail-content table th {
+            background: #f5f5f5;
+            font-weight: 600;
+        }
+        
+        button {
+            padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
+            font-weight: 600; cursor: pointer; font-family: inherit;
+        }
+        .btn-primary { background: var(--primary); color: #fff; }
+        .btn-accent { background: var(--accent); color: #fff; }
+        .btn-ghost { background: transparent; border-color: var(--ink); color: var(--ink); }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-small { font-size: 12px; padding: 6px 10px; }
+        .muted { color: var(--muted); font-size: 12px; }
+        
+        .actions {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        
+        .edit-form {
+            display: none;
+        }
+        .edit-form input,
+        .edit-form textarea {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            font-size: 14px;
+            background: #fff;
+            outline: none;
+            font-family: inherit;
+            margin-bottom: 12px;
+        }
+        .edit-form textarea {
+            min-height: 300px;
+            resize: vertical;
+        }
+        
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: var(--ink); color: #fff; padding: 10px 20px; border-radius: 12px;
+            font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            z-index: 2000; animation: toastIn 0.3s ease-out;
+        }
+        @keyframes toastIn { from { bottom: 0; opacity: 0; } to { bottom: 24px; opacity: 1; } }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+
+        @media (max-width: 700px) {
+            .nav { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+    <!-- Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <!-- DOMPurify for XSS protection -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.8/dist/purify.min.js"></script>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">情报详情</div>
+            </div>
+            <div>
+                <span class="user-pill" id="userPill">未登录</span>
+                <span class="nav-links">
+                    <a href="/">首页</a>
+                    <a href="/app">应用</a>
+                    <a href="/groups">团队</a>
+                    <a href="/settings">设置</a>
+                    <a href="/login" onclick="logout()">退出</a>
+                </span>
+            </div>
+        </div>
+
+        <div id="viewMode">
+            <div class="card">
+                <div class="actions">
+                    <button class="btn-primary" onclick="switchToEditMode()">编辑</button>
+                    <button class="btn-danger" onclick="deleteItem()">删除</button>
+                    <button class="btn-ghost" onclick="goBack()">返回</button>
+                </div>
+                <h1 class="detail-title" id="itemTitle">加载中...</h1>
+                <div class="detail-meta" id="itemMeta"></div>
+                <div class="detail-content" id="itemContent"></div>
+            </div>
+        </div>
+
+        <div id="editMode" class="edit-form">
+            <div class="card">
+                <h2>编辑情报</h2>
+                <input type="text" id="editTitle" placeholder="标题（可选）">
+                <textarea id="editContent" placeholder="内容（支持Markdown格式）"></textarea>
+                <input type="text" id="editTags" placeholder="标签（逗号分隔）">
+                <div style="display: flex; gap: 12px; margin-top: 12px;">
+                    <button class="btn-primary" onclick="saveEdit()">保存</button>
+                    <button class="btn-ghost" onclick="cancelEdit()">取消</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let currentItem = null;
+        let itemId = null;
+
+        // 配置marked和DOMPurify
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            headerIds: true,
+            mangle: false
+        });
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            try {
+                const options = { method };
+                if (body) {
+                    options.headers = { 'Content-Type': 'application/json' };
+                    options.body = JSON.stringify(body);
+                }
+                if (authToken) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+                const res = await fetch(endpoint, options);
+                if (res.status === 401) {
+                    logout();
+                    window.location.href = '/login';
+                    return null;
+                }
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(errorText || `HTTP ${res.status}`);
+                }
+                return await res.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (!res || !res.user) return;
+            currentUser = res.user;
+            document.getElementById('userPill').innerText = currentUser.name || currentUser.email;
+        }
+
+        async function loadItem() {
+            try {
+                const res = await apiCall(`/api/v1/items/${itemId}`);
+                if (!res || !res.data) {
+                    showToast('加载失败');
+                    return;
+                }
+                
+                currentItem = res.data;
+                
+                // 显示标题
+                const titleEl = document.getElementById('itemTitle');
+                titleEl.textContent = currentItem.title || '无标题';
+                
+                // 显示元数据
+                const metaEl = document.getElementById('itemMeta');
+                const createdAt = new Date(currentItem.created_at).toLocaleString('zh-CN');
+                const visTag = currentItem.visibility === 'group'
+                    ? `<span class="tag">团队: ${currentItem.group_name || '未命名'}</span>`
+                    : `<span class="tag">私有</span>`;
+                const tags = (currentItem.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ');
+                metaEl.innerHTML = `
+                    <span>创建于: ${createdAt}</span>
+                    <span>作者: ${currentItem.owner_name || '未知'}</span>
+                    ${visTag}
+                    ${tags}
+                `;
+                
+                // 渲染Markdown内容并清理XSS
+                const contentEl = document.getElementById('itemContent');
+                const rawHtml = marked.parse(currentItem.content);
+                const cleanHtml = DOMPurify.sanitize(rawHtml, {
+                    ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'strong', 'em', 'u', 's', 'a', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img', 'hr'],
+                    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class']
+                });
+                contentEl.innerHTML = cleanHtml;
+            } catch (error) {
+                showToast('加载失败: ' + error.message);
+            }
+        }
+
+        function switchToEditMode() {
+            document.getElementById('viewMode').style.display = 'none';
+            document.getElementById('editMode').style.display = 'block';
+            
+            document.getElementById('editTitle').value = currentItem.title || '';
+            document.getElementById('editContent').value = currentItem.content || '';
+            document.getElementById('editTags').value = (currentItem.tags || []).join(', ');
+        }
+
+        function cancelEdit() {
+            document.getElementById('viewMode').style.display = 'block';
+            document.getElementById('editMode').style.display = 'none';
+        }
+
+        async function saveEdit() {
+            const title = document.getElementById('editTitle').value.trim();
+            const content = document.getElementById('editContent').value.trim();
+            const tags = document.getElementById('editTags').value;
+            
+            if (!content) {
+                alert('内容不能为空');
+                return;
+            }
+            
+            try {
+                const res = await apiCall(`/api/v1/items/${itemId}`, 'PUT', {
+                    title,
+                    content,
+                    visibility: currentItem.visibility,
+                    group_id: currentItem.group_id,
+                    tags
+                });
+                
+                if (res && res.status === 'success') {
+                    showToast('✓ 保存成功');
+                    await loadItem();
+                    cancelEdit();
+                }
+            } catch (error) {
+                showToast('保存失败: ' + error.message);
+            }
+        }
+
+        async function deleteItem() {
+            if (!confirm('确定要删除这条情报吗？此操作不可撤销。')) return;
+            
+            try {
+                const res = await apiCall(`/api/v1/items/${itemId}`, 'DELETE');
+                if (res && res.status === 'success') {
+                    showToast('✓ 已删除');
+                    setTimeout(() => {
+                        window.location.href = '/app';
+                    }, 1000);
+                }
+            } catch (error) {
+                showToast('删除失败: ' + error.message);
+            }
+        }
+
+        function goBack() {
+            window.history.back();
+        }
+
+        window.onload = async () => {
+            if (!authToken) {
+                window.location.href = '/login';
+                return;
+            }
+            
+            // 从URL获取item_id
+            const params = new URLSearchParams(window.location.search);
+            itemId = params.get('id');
+            
+            if (!itemId) {
+                showToast('缺少参数');
+                setTimeout(() => window.location.href = '/app', 1000);
+                return;
+            }
+            
+            await loadMe();
+            await loadItem();
+        };
+    </script>
+</body>
+</html>
