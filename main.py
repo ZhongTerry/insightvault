@@ -249,14 +249,18 @@ async def lifespan(app: FastAPI):
                     owner_user_id INTEGER REFERENCES users(id),
                     visibility TEXT DEFAULT 'private',
                     group_id INTEGER REFERENCES groups(id),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    vectorization_status VARCHAR(20) DEFAULT 'pending'
                 );
             """)
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS title TEXT;")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id);")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS visibility TEXT DEFAULT 'private';")
             await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES groups(id);")
+            await conn.execute("ALTER TABLE intelligence_vault ADD COLUMN IF NOT EXISTS vectorization_status VARCHAR(20) DEFAULT 'pending';")
             await conn.execute("UPDATE intelligence_vault SET visibility = 'private' WHERE visibility IS NULL;")
+            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'success' WHERE vectorization_status IS NULL AND embedding IS NOT NULL;")
+            await conn.execute("UPDATE intelligence_vault SET vectorization_status = 'pending' WHERE vectorization_status IS NULL AND embedding IS NULL;")
 
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_iv_owner ON intelligence_vault (owner_user_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_iv_group ON intelligence_vault (group_id);")
@@ -265,6 +269,31 @@ async def lifespan(app: FastAPI):
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_group ON tags (group_id);")
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_tags_private ON tags (owner_user_id, name) WHERE visibility = 'private';")
             await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uniq_tags_group ON tags (group_id, name) WHERE visibility = 'group';")
+            
+            # 阅读列表表
+            await conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS reading_list (
+                    id SERIAL PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    content TEXT,
+                    source VARCHAR(255),
+                    cover_image TEXT,
+                    has_content BOOLEAN DEFAULT FALSE,
+                    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    is_archived BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS has_content BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS is_read BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE reading_list ADD COLUMN IF NOT EXISTS is_archived BOOLEAN DEFAULT FALSE;")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_owner ON reading_list (owner_user_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_created ON reading_list (created_at DESC);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_rl_status ON reading_list (owner_user_id, is_read, is_archived);")
+            
             logger.info("数据库环境检查完成")
 
             # Bootstrap admin if configured
@@ -918,6 +947,10 @@ async def settings_page(request: Request):
 async def detail_page(request: Request):
     return templates.TemplateResponse("detail.html", {"request": request})
 
+@app.get("/reading")
+async def reading_page(request: Request):
+    return templates.TemplateResponse("reading.html", {"request": request})
+
 @app.get("/api/search")
 async def api_search(request: Request, type: str = 'all', q: str = '', page: int = 1, user: dict = Depends(get_current_user)):
     with Profiler() as p_total:
@@ -927,7 +960,7 @@ async def api_search(request: Request, type: str = 'all', q: str = '', page: int
     return results
 
 @app.post("/api/add")
-async def api_add(request: Request, data: dict, user: dict = Depends(get_current_user)):
+async def api_add(request: Request, background_tasks: BackgroundTasks, data: dict, user: dict = Depends(get_current_user)):
     with Profiler() as p_total:
         content = data.get('content')
         visibility = (data.get("visibility") or "private").strip()
@@ -948,24 +981,27 @@ async def api_add(request: Request, data: dict, user: dict = Depends(get_current
         else:
             group_id = None
         
-        vec = await get_embedding(content)
         tags = normalize_tags(tags_input)
         
         with Profiler() as p_db:
+            # 先插入数据（embedding 为 NULL）
             async with request.app.state.db_pool.connection() as conn:
                 async with conn.cursor(row_factory=dict_row) as cur:
                     await cur.execute(
                         """
                         INSERT INTO intelligence_vault (content, embedding, owner_user_id, visibility, group_id)
-                        VALUES (%s, %s::vector, %s, %s, %s)
+                        VALUES (%s, NULL, %s, %s, %s)
                         RETURNING id
                         """,
-                        (content, json.dumps(vec), user["id"], visibility, group_id)
+                        (content, user["id"], visibility, group_id)
                     )
                     row = await cur.fetchone()
                     item_id = row["id"]
 
             await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
+        
+        # 启动后台向量化任务
+        background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, content)
         
         logger.info(f"DB 写入完成 | 耗时: {p_db.duration:.2f}ms")
     logger.info(f">>> 录入请求总响应时间: {p_total.duration:.2f}ms")
@@ -994,7 +1030,7 @@ async def api_delete(request: Request, item_id: int, user: dict = Depends(get_cu
     return {"status": "success"}
 
 @app.put("/api/update/{item_id}")
-async def api_update(request: Request, item_id: int, data: dict, user: dict = Depends(get_current_user)):
+async def api_update(request: Request, background_tasks: BackgroundTasks, item_id: int, data: dict, user: dict = Depends(get_current_user)):
     new_content = data.get('content')
     visibility = (data.get("visibility") or "private").strip()
     group_id = data.get("group_id")
@@ -1027,20 +1063,43 @@ async def api_update(request: Request, item_id: int, data: dict, user: dict = De
             else:
                 group_id = None
 
-            new_vec = await get_embedding(new_content)
+            # 先更新数据（不更新 embedding）
             await cur.execute(
                 """
                 UPDATE intelligence_vault
-                SET content = %s, embedding = %s::vector, visibility = %s, group_id = %s
+                SET content = %s, visibility = %s, group_id = %s
                 WHERE id = %s
                 """,
-                (new_content, json.dumps(new_vec), visibility, group_id, item_id)
+                (new_content, visibility, group_id, item_id)
             )
 
     if tags_input is not None:
         tags = normalize_tags(tags_input)
         await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
+    
+    # 启动后台向量化任务
+    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, new_content)
+    
     return {"status": "success"}
+
+# 异步背景任务：向量化单个项目
+async def background_vectorize_item(pool: AsyncConnectionPool, item_id: int, text_to_vectorize: str):
+    """后台任务：为单个情报项生成向量并更新数据库"""
+    try:
+        vec = await get_embedding(text_to_vectorize)
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE intelligence_vault SET embedding = %s::vector, vectorization_status = 'success' WHERE id = %s",
+                (json.dumps(vec), item_id)
+            )
+        logger.info(f"✓ 项目 #{item_id} 向量化完成")
+    except Exception as e:
+        logger.error(f"✗ 项目 #{item_id} 向量化失败: {e}")
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE intelligence_vault SET vectorization_status = 'failed' WHERE id = %s",
+                (item_id,)
+            )
 
 # 异步背景任务：全量重新向量化
 async def background_revectorize(pool: AsyncConnectionPool):
@@ -1049,25 +1108,33 @@ async def background_revectorize(pool: AsyncConnectionPool):
     try:
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
-                await cur.execute("SELECT id, content FROM intelligence_vault")
+                await cur.execute("SELECT id, title, content FROM intelligence_vault")
                 all_items = await cur.fetchall()
                 
                 count = 0
                 for item in all_items:
+                    # 构建向量化文本（标题 + 内容）
+                    text = (item.get('title') or '') + ' ' + (item.get('content') or '')
+                    text = text.strip()
+                    
                     # 强制刷新向量 (这里不使用缓存逻辑，因为是"重构")
                     base_url = os.getenv("AI_BASE_URL").rstrip('/')
                     endpoint = f"{base_url}/embeddings"
                     headers = {"Authorization": f"Bearer {os.getenv('AI_API_KEY')}"}
-                    payload = {"model": os.getenv("EMBEDDING_MODEL"), "input": item['content']}
+                    payload = {"model": os.getenv("EMBEDDING_MODEL"), "input": text}
                     
                     async with httpx.AsyncClient() as client:
                         response = await client.post(endpoint, json=payload, headers=headers, timeout=10.0)
                         if response.status_code == 200:
                             vec = response.json()['data'][0]['embedding']
-                            # 再次强调：使用 ::vector 确保类型安全
                             await conn.execute(
-                                "UPDATE intelligence_vault SET embedding = %s::vector WHERE id = %s",
+                                "UPDATE intelligence_vault SET embedding = %s::vector, vectorization_status = 'success' WHERE id = %s",
                                 (json.dumps(vec), item['id'])
+                            )
+                        else:
+                            await conn.execute(
+                                "UPDATE intelligence_vault SET vectorization_status = 'failed' WHERE id = %s",
+                                (item['id'],)
                             )
                     
                     count += 1
@@ -1117,6 +1184,7 @@ async def api_v1_list_items(
                         SELECT iv.id, iv.title, 
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
+                               iv.vectorization_status,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1135,6 +1203,7 @@ async def api_v1_list_items(
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
+                               iv.vectorization_status,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1152,6 +1221,7 @@ async def api_v1_list_items(
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
+                               iv.vectorization_status,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1194,6 +1264,7 @@ async def api_v1_get_item(
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute("""
                 SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                       iv.vectorization_status,
                        iv.owner_user_id, u.name as owner_name,
                        g.name AS group_name,
                        ARRAY(
@@ -1228,10 +1299,11 @@ async def api_v1_get_item(
 @app.post("/api/v1/items")
 async def api_v1_create_item(
     request: Request,
+    background_tasks: BackgroundTasks,
     data: dict,
     user: dict = Depends(require_scope('write'))
 ):
-    """创建新的情报项目"""
+    """创建新的情报项目（异步向量化）"""
     title = (data.get('title') or '').strip()
     content = data.get('content', '').strip()
     visibility = (data.get("visibility") or "private").strip()
@@ -1253,34 +1325,40 @@ async def api_v1_create_item(
     else:
         group_id = None
     
-    vec = await get_embedding(title + ' ' + content if title else content)
     tags = normalize_tags(tags_input)
     
+    # 先插入数据（embedding 为 NULL, status 为 pending），立即返回
     async with request.app.state.db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 """
-                INSERT INTO intelligence_vault (title, content, embedding, owner_user_id, visibility, group_id)
-                VALUES (%s, %s, %s::vector, %s, %s, %s)
+                INSERT INTO intelligence_vault (title, content, embedding, owner_user_id, visibility, group_id, vectorization_status)
+                VALUES (%s, %s, NULL, %s, %s, %s, 'pending')
                 RETURNING id
                 """,
-                (title or None, content, json.dumps(vec), user["id"], visibility, group_id)
+                (title or None, content, user["id"], visibility, group_id)
             )
             row = await cur.fetchone()
             item_id = row["id"]
     
     await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
     
+    # 启动后台向量化任务
+    text_to_vectorize = (title + ' ' + content) if title else content
+    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, text_to_vectorize)
+    
+    logger.info(f"✓ 情报 #{item_id} 已创建，向量化任务已加入队列")
     return {"status": "success", "data": {"id": item_id}}
 
 @app.put("/api/v1/items/{item_id}")
 async def api_v1_update_item(
     request: Request,
+    background_tasks: BackgroundTasks,
     item_id: int,
     data: dict,
     user: dict = Depends(require_scope('write'))
 ):
-    """更新情报项目"""
+    """更新情报项目（异步向量化）"""
     title = (data.get('title') or '').strip()
     content = data.get('content', '').strip()
     visibility = (data.get("visibility") or "private").strip()
@@ -1314,20 +1392,26 @@ async def api_v1_update_item(
             else:
                 group_id = None
             
-            new_vec = await get_embedding(title + ' ' + content if title else content)
+            # 先更新数据（重置向量化状态），立即返回
             await cur.execute(
                 """
                 UPDATE intelligence_vault
-                SET title = %s, content = %s, embedding = %s::vector, visibility = %s, group_id = %s
+                SET title = %s, content = %s, visibility = %s, group_id = %s, 
+                    embedding = NULL, vectorization_status = 'pending'
                 WHERE id = %s
                 """,
-                (title or None, content, json.dumps(new_vec), visibility, group_id, item_id)
+                (title or None, content, visibility, group_id, item_id)
             )
     
     if tags_input is not None:
         tags = normalize_tags(tags_input)
         await set_item_tags(request.app.state.db_pool, item_id, user["id"], visibility, group_id, tags)
     
+    # 启动后台向量化任务
+    text_to_vectorize = (title + ' ' + content) if title else content
+    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, item_id, text_to_vectorize)
+    
+    logger.info(f"✓ 情报 #{item_id} 已更新，向量化任务已加入队列")
     return {"status": "success"}
 
 @app.delete("/api/v1/items/{item_id}")
@@ -1352,6 +1436,229 @@ async def api_v1_delete_item(
             await cur.execute("DELETE FROM intelligence_vault WHERE id = %s", (item_id,))
     
     return {"status": "success"}
+
+# --- Reading List API (稍后阅读) ---
+
+@app.post("/api/v1/reading-list")
+async def api_v1_create_reading_item(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """添加稍后阅读项目"""
+    title = (data.get('title') or '').strip()
+    url = (data.get('url') or '').strip()
+    content = (data.get('content') or '').strip()
+    source = (data.get('source') or '').strip()
+    cover_image = (data.get('cover_image') or '').strip()
+    
+    if not title or not url:
+        raise HTTPException(status_code=400, detail="Title and URL are required")
+    
+    has_content = bool(content)
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO reading_list (title, url, content, source, cover_image, has_content, owner_user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (title, url, content or None, source or None, cover_image or None, has_content, user["id"])
+            )
+            row = await cur.fetchone()
+            item_id = row["id"]
+    
+    return {"status": "success", "data": {"id": item_id}}
+
+@app.get("/api/v1/reading-list")
+async def api_v1_list_reading_items(
+    request: Request,
+    filter: str = 'all',  # all, unread, read, archived
+    page: int = 1,
+    per_page: int = Query(default=20, le=100),
+    user: dict = Depends(require_scope('read'))
+):
+    """获取阅读列表"""
+    offset = (page - 1) * per_page
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            base_query = "FROM reading_list WHERE owner_user_id = %s"
+            params = [user["id"]]
+            
+            if filter == 'unread':
+                base_query += " AND is_read = FALSE AND is_archived = FALSE"
+            elif filter == 'read':
+                base_query += " AND is_read = TRUE AND is_archived = FALSE"
+            elif filter == 'archived':
+                base_query += " AND is_archived = TRUE"
+            else:  # all
+                base_query += " AND is_archived = FALSE"
+            
+            await cur.execute(
+                f"""
+                SELECT id, title, url, source, cover_image, has_content, is_read, is_archived, created_at
+                {base_query}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+                """,
+                params + [per_page, offset]
+            )
+            rows = await cur.fetchall()
+            results = [dict(row) for row in rows]
+    
+    for r in results:
+        if isinstance(r.get('created_at'), datetime):
+            r['created_at'] = r['created_at'].isoformat()
+    
+    return {
+        "status": "success",
+        "data": results,
+        "pagination": {
+            "page": page,
+            "per_page": per_page,
+            "has_more": len(results) == per_page
+        }
+    }
+
+@app.get("/api/v1/reading-list/{item_id}")
+async def api_v1_get_reading_item(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('read'))
+):
+    """获取单个阅读项详情"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT * FROM reading_list WHERE id = %s AND owner_user_id = %s
+                """,
+                (item_id, user["id"])
+            )
+            item = await cur.fetchone()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Reading item not found")
+    
+    item_dict = dict(item)
+    if isinstance(item_dict.get('created_at'), datetime):
+        item_dict['created_at'] = item_dict['created_at'].isoformat()
+    if isinstance(item_dict.get('updated_at'), datetime):
+        item_dict['updated_at'] = item_dict['updated_at'].isoformat()
+    
+    return {"status": "success", "data": item_dict}
+
+@app.put("/api/v1/reading-list/{item_id}")
+async def api_v1_update_reading_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """更新阅读项（标记已读、归档等）"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id FROM reading_list WHERE id = %s AND owner_user_id = %s",
+                (item_id, user["id"])
+            )
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Reading item not found")
+            
+            updates = []
+            params = []
+            
+            if 'is_read' in data:
+                updates.append("is_read = %s")
+                params.append(bool(data['is_read']))
+            
+            if 'is_archived' in data:
+                updates.append("is_archived = %s")
+                params.append(bool(data['is_archived']))
+            
+            if updates:
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(item_id)
+                await cur.execute(
+                    f"UPDATE reading_list SET {', '.join(updates)} WHERE id = %s",
+                    params
+                )
+    
+    return {"status": "success"}
+
+@app.delete("/api/v1/reading-list/{item_id}")
+async def api_v1_delete_reading_item(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('write'))
+):
+    """删除阅读项"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT id FROM reading_list WHERE id = %s AND owner_user_id = %s",
+                (item_id, user["id"])
+            )
+            if not await cur.fetchone():
+                raise HTTPException(status_code=404, detail="Reading item not found")
+            
+            await cur.execute("DELETE FROM reading_list WHERE id = %s", (item_id,))
+    
+    return {"status": "success"}
+
+@app.post("/api/v1/reading-list/{item_id}/save-to-vault")
+async def api_v1_save_reading_to_vault(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    item_id: int,
+    user: dict = Depends(require_scope('write'))
+):
+    """将阅读项保存到情报库"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            # 获取阅读项
+            await cur.execute(
+                "SELECT * FROM reading_list WHERE id = %s AND owner_user_id = %s",
+                (item_id, user["id"])
+            )
+            reading_item = await cur.fetchone()
+            
+            if not reading_item:
+                raise HTTPException(status_code=404, detail="Reading item not found")
+            
+            # 如果没有内容，不允许保存
+            if not reading_item['has_content']:
+                raise HTTPException(status_code=400, detail="Cannot save item without content")
+            
+            # 创建情报项
+            title = f"{reading_item['title']} (来源: {reading_item['source'] or reading_item['url']})"
+            content = f"# {reading_item['title']}\n\n**来源**: {reading_item['url']}\n\n---\n\n{reading_item['content']}"
+            
+            await cur.execute(
+                """
+                INSERT INTO intelligence_vault (title, content, embedding, owner_user_id, visibility, vectorization_status)
+                VALUES (%s, %s, NULL, %s, 'private', 'pending')
+                RETURNING id
+                """,
+                (title, content, user["id"])
+            )
+            vault_item = await cur.fetchone()
+            vault_id = vault_item["id"]
+            
+            # 标记阅读项为已归档
+            await cur.execute(
+                "UPDATE reading_list SET is_archived = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (item_id,)
+            )
+    
+    # 启动后台向量化任务
+    text_to_vectorize = f"{title} {content}"
+    background_tasks.add_task(background_vectorize_item, request.app.state.db_pool, vault_id, text_to_vectorize)
+    
+    return {"status": "success", "data": {"vault_id": vault_id}}
 
 # --- 5. API密钥管理 ---
 

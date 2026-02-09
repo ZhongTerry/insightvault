@@ -36,8 +36,12 @@
             font-family: 'Playfair Display', serif;
             font-size: 26px; letter-spacing: 0.5px;
         }
+        .nav-links {
+            display: flex;
+            gap: 16px;
+        }
         .nav-links a {
-            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+            color: var(--ink); text-decoration: none; font-weight: 600;
         }
         .user-pill {
             padding: 6px 10px; border-radius: 999px; background: #fff; border: 1px solid var(--line);
@@ -72,6 +76,8 @@
             font-size: 11px; background: #f0f0f0; padding: 3px 8px; border-radius: 6px; margin-right: 6px;
             display: inline-block;
         }
+        .status-pending { font-size: 11px; color: var(--muted); background: #eee; padding: 3px 8px; border-radius: 6px; display: inline-block; }
+        .status-failed { font-size: 11px; color: #fff; background: var(--accent); padding: 3px 8px; border-radius: 6px; display: inline-block; }
         .detail-content {
             line-height: 1.7;
             font-size: 15px;
@@ -203,6 +209,7 @@
                 <span class="nav-links">
                     <a href="/">首页</a>
                     <a href="/app">应用</a>
+                    <a href="/reading">稍后阅读</a>
                     <a href="/groups">团队</a>
                     <a href="/settings">设置</a>
                     <a href="/login" onclick="logout()">退出</a>
@@ -319,11 +326,20 @@
                 const visTag = currentItem.visibility === 'group'
                     ? `<span class="tag">团队: ${currentItem.group_name || '未命名'}</span>`
                     : `<span class="tag">私有</span>`;
+                
+                let statusHtml = '';
+                if (currentItem.vectorization_status === 'pending') {
+                    statusHtml = `<span class="status-pending">⌛ 向量化中...</span>`;
+                } else if (currentItem.vectorization_status === 'failed') {
+                    statusHtml = `<span class="status-failed">⚠ 向量化失败</span>`;
+                }
+
                 const tags = (currentItem.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ');
                 metaEl.innerHTML = `
                     <span>创建于: ${createdAt}</span>
                     <span>作者: ${currentItem.owner_name || '未知'}</span>
                     ${visTag}
+                    ${statusHtml}
                     ${tags}
                 `;
                 

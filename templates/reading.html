@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | 稍后阅读</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=Playfair+Display:wght@600&display=swap');
+        :root {
+            --bg-1: #f8f2e7;
+            --bg-2: #e8f4f1;
+            --ink: #1b1f23;
+            --muted: #667085;
+            --primary: #0e7c7b;
+            --accent: #f76c4f;
+            --card: rgba(255, 255, 255, 0.95);
+            --line: rgba(20, 20, 20, 0.08);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Space Grotesk', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(247, 108, 79, 0.15), transparent 40%),
+                radial-gradient(circle at 80% 10%, rgba(14, 124, 123, 0.18), transparent 35%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            display: flex;
+            height: 100vh;
+            padding: 0;
+        }
+        .sidebar {
+            width: 380px;
+            background: var(--card);
+            border-right: 1px solid var(--line);
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            padding: 20px;
+            border-bottom: 1px solid var(--line);
+        }
+        .brand {
+            font-family: 'Playfair Display', serif;
+            font-size: 24px;
+            margin-bottom: 4px;
+        }
+        .brand-subtitle {
+            font-size: 12px;
+            color: var(--muted);
+        }
+        .nav-links {
+            margin-top: 12px;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .nav-links a {
+            color: var(--ink);
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .filters {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--line);
+            display: flex;
+            gap: 8px;
+        }
+        .filter-btn {
+            padding: 6px 12px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: transparent;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .filter-btn.active {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+        }
+        .list-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 12px;
+        }
+        .list-item {
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .list-item:hover {
+            box-shadow: 0 4px 12px rgba(14, 124, 123, 0.1);
+            transform: translateY(-1px);
+        }
+        .list-item.active {
+            border-color: var(--primary);
+            background: #f0faf9;
+        }
+        .list-item-title {
+            font-weight: 600;
+            font-size: 15px;
+            margin-bottom: 6px;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .list-item-meta {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: #f0f0f0;
+        }
+        .badge-read {
+            background: #e0f2f1;
+            color: var(--primary);
+        }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .content-header {
+            padding: 20px 32px;
+            border-bottom: 1px solid var(--line);
+            background: var(--card);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .user-pill {
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #fff;
+            border: 1px solid var(--line);
+            font-size: 12px;
+            color: var(--muted);
+        }
+        .content-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 32px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            color: var(--muted);
+        }
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 16px;
+        }
+        .article-title {
+            font-size: 32px;
+            font-weight: 700;
+            margin: 0 0 16px 0;
+            line-height: 1.3;
+        }
+        .article-meta {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 32px;
+            padding-bottom: 24px;
+            border-bottom: 2px solid var(--line);
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .article-meta a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        .article-content {
+            max-width: 800px;
+            line-height: 1.8;
+            font-size: 16px;
+        }
+        .article-content h1 { font-size: 28px; margin: 32px 0 16px; }
+        .article-content h2 { font-size: 24px; margin: 28px 0 14px; }
+        .article-content h3 { font-size: 20px; margin: 24px 0 12px; }
+        .article-content p { margin: 16px 0; }
+        .article-content pre {
+            background: #f5f5f5;
+            padding: 16px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-family: 'Courier New', monospace;
+        }
+        .article-content code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+        }
+        .article-content pre code {
+            background: none;
+            padding: 0;
+        }
+        .article-content img {
+            max-width: 100%;
+            border-radius: 8px;
+            margin: 24px 0;
+        }
+        .article-content blockquote {
+            border-left: 4px solid var(--primary);
+            padding-left: 16px;
+            margin: 20px 0;
+            color: var(--muted);
+            font-style: italic;
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
+        }
+        button {
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background: #0a615f;
+        }
+        .btn-ghost {
+            background: transparent;
+            border-color: var(--ink);
+            color: var(--ink);
+        }
+        .btn-ghost:hover {
+            background: rgba(0, 0, 0, 0.05);
+        }
+        .btn-accent {
+            background: var(--accent);
+            color: #fff;
+        }
+        .btn-accent:hover {
+            background: #e55a3e;
+        }
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--ink);
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 14px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            z-index: 2000;
+            animation: toastIn 0.3s ease-out;
+        }
+        @keyframes toastIn {
+            from { bottom: 0; opacity: 0; }
+            to { bottom: 24px; opacity: 1; }
+        }
+        @media (max-width: 900px) {
+            .container {
+                flex-direction: column;
+            }
+            .sidebar {
+                width: 100%;
+                height: 50vh;
+            }
+            .main-content {
+                height: 50vh;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="sidebar">
+            <div class="header">
+                <div class="brand">📚 稍后阅读</div>
+                <div class="brand-subtitle">收集与整理你的网络发现</div>
+                <div class="nav-links">
+                    <a href="/app">情报库</a>
+                    <a href="/groups">团队</a>
+                    <a href="#" onclick="logout()">退出</a>
+                </div>
+            </div>
+            <div class="filters">
+                <button class="filter-btn active" data-filter="all" onclick="switchFilter('all')">全部</button>
+                <button class="filter-btn" data-filter="unread" onclick="switchFilter('unread')">未读</button>
+                <button class="filter-btn" data-filter="read" onclick="switchFilter('read')">已读</button>
+                <button class="filter-btn" data-filter="archived" onclick="switchFilter('archived')">已归档</button>
+            </div>
+            <div class="list-container" id="listContainer">
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <div>暂无内容</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="content-header">
+                <div class="user-info">
+                    <span class="user-pill" id="userPill">未登录</span>
+                </div>
+                <div class="btn-group" id="articleActions" style="display: none;">
+                    <button class="btn-primary" onclick="toggleRead()">标记为<span id="readToggleText">已读</span></button>
+                    <button class="btn-ghost" onclick="saveToVault()">保存到情报库</button>
+                    <button class="btn-accent" onclick="deleteReading()">删除</button>
+                </div>
+            </div>
+            <div class="content-body" id="contentBody">
+                <div class="empty-state">
+                    <div class="empty-state-icon">👈</div>
+                    <div>从左侧选择一篇文章开始阅读</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let authToken = localStorage.getItem('authToken') || '';
+        let currentUser = null;
+        let currentFilter = 'all';
+        let currentItem = null;
+
+        marked.setOptions({
+            breaks: true,
+            gfm: true,
+            headerIds: true,
+            mangle: false
+        });
+
+        function logout() {
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('authUser');
+            window.location.href = '/login';
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            try {
+                const options = { method };
+                if (body) {
+                    options.headers = { 'Content-Type': 'application/json' };
+                    options.body = JSON.stringify(body);
+                }
+                if (authToken) {
+                    options.headers = options.headers || {};
+                    options.headers['Authorization'] = `Bearer ${authToken}`;
+                }
+                const res = await fetch(endpoint, options);
+                if (res.status === 401) {
+                    logout();
+                    return null;
+                }
+                if (!res.ok) {
+                    const errorText = await res.text();
+                    throw new Error(errorText || `HTTP ${res.status}`);
+                }
+                return await res.json();
+            } catch (error) {
+                console.error('API Error:', error);
+                throw error;
+            }
+        }
+
+        async function loadMe() {
+            const res = await apiCall('/api/auth/me');
+            if (!res || !res.user) {
+                window.location.href = '/login';
+                return;
+            }
+            currentUser = res.user;
+            document.getElementById('userPill').innerText = currentUser.name || currentUser.email;
+        }
+
+        async function loadList() {
+            const res = await apiCall(`/api/v1/reading-list?filter=${currentFilter}`);
+            const container = document.getElementById('listContainer');
+            
+            if (!res || !res.data || res.data.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📭</div>
+                        <div>${currentFilter === 'all' ? '暂无内容' : '没有符合条件的内容'}</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            container.innerHTML = '';
+            res.data.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'list-item';
+                div.id = `item-${item.id}`;
+                if (currentItem && currentItem.id === item.id) {
+                    div.classList.add('active');
+                }
+                
+                const createdAt = new Date(item.created_at).toLocaleDateString('zh-CN');
+                const badges = [];
+                if (item.is_read) badges.push('<span class="badge badge-read">已读</span>');
+                if (!item.has_content) badges.push('<span class="badge">仅链接</span>');
+                
+                div.innerHTML = `
+                    <div class="list-item-title"></div>
+                    <div class="list-item-meta">
+                        <span>${item.source || new URL(item.url).hostname}</span>
+                        <span>${createdAt}</span>
+                        ${badges.join('')}
+                    </div>
+                `;
+                
+                div.querySelector('.list-item-title').textContent = item.title;
+                div.onclick = () => viewArticle(item.id);
+                container.appendChild(div);
+            });
+        }
+
+        async function viewArticle(itemId) {
+            const res = await apiCall(`/api/v1/reading-list/${itemId}`);
+            if (!res || !res.data) {
+                showToast('加载失败');
+                return;
+            }
+            
+            currentItem = res.data;
+            
+            // 更新左侧列表的选中状态
+            document.querySelectorAll('.list-item').forEach(el => el.classList.remove('active'));
+            const itemEl = document.getElementById(`item-${itemId}`);
+            if (itemEl) itemEl.classList.add('active');
+            
+            const contentBody = document.getElementById('contentBody');
+            const articleActions = document.getElementById('articleActions');
+            
+            if (!currentItem.has_content) {
+                // 没有内容，显示提示并提供打开链接按钮
+                contentBody.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">🔗</div>
+                        <h2 style="margin: 16px 0; color: var(--ink);">未能获取文章内容</h2>
+                        <p style="margin-bottom: 24px;">此文章仅保存了链接，您可以：</p>
+                        <button class="btn-primary" onclick="window.open('${currentItem.url}', '_blank')" style="font-size: 15px; padding: 12px 24px;">
+                            在新标签页中打开原文
+                        </button>
+                    </div>
+                `;
+                articleActions.innerHTML = `
+                    <button class="btn-accent" onclick="deleteReading()">删除</button>
+                `;
+            } else {
+                // 有内容，渲染文章
+                const rawHtml = marked.parse(currentItem.content);
+                const cleanHtml = DOMPurify.sanitize(rawHtml, {
+                    ALLOWED_TAGS: ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'br', 'strong', 'em', 'u', 's', 'a', 'ul', 'ol', 'li', 'blockquote', 'code', 'pre', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'img', 'hr'],
+                    ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class']
+                });
+                
+                contentBody.innerHTML = `
+                    <article>
+                        <h1 class="article-title"></h1>
+                        <div class="article-meta">
+                            <span>来源: <a href="${currentItem.url}" target="_blank">${currentItem.source || new URL(currentItem.url).hostname}</a></span>
+                            <span>收藏于: ${new Date(currentItem.created_at).toLocaleString('zh-CN')}</span>
+                        </div>
+                        <div class="article-content">${cleanHtml}</div>
+                    </article>
+                `;
+                contentBody.querySelector('.article-title').textContent = currentItem.title;
+                
+                articleActions.innerHTML = `
+                    <button class="btn-primary" onclick="toggleRead()">标记为<span id="readToggleText">${currentItem.is_read ? '未读' : '已读'}</span></button>
+                    <button class="btn-ghost" onclick="saveToVault()">保存到情报库</button>
+                    <button class="btn-accent" onclick="deleteReading()">删除</button>
+                `;
+            }
+            
+            articleActions.style.display = 'flex';
+        }
+
+        async function toggleRead() {
+            if (!currentItem) return;
+            
+            const newReadStatus = !currentItem.is_read;
+            await apiCall(`/api/v1/reading-list/${currentItem.id}`, 'PUT', {
+                is_read: newReadStatus
+            });
+            
+            currentItem.is_read = newReadStatus;
+            document.getElementById('readToggleText').textContent = newReadStatus ? '未读' : '已读';
+            showToast(newReadStatus ? '已标记为已读' : '已标记为未读');
+            
+            await loadList();
+        }
+
+        async function saveToVault() {
+            if (!currentItem) return;
+            
+            if (!currentItem.has_content) {
+                showToast('无法保存：该文章没有内容');
+                return;
+            }
+            
+            if (!confirm('确定要将此文章保存到情报库吗？\n保存后将自动归档。')) return;
+            
+            try {
+                const res = await apiCall(`/api/v1/reading-list/${currentItem.id}/save-to-vault`, 'POST');
+                showToast('已保存到情报库');
+                await loadList();
+                
+                // 清空右侧显示
+                document.getElementById('contentBody').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">✅</div>
+                        <h2 style="margin: 16px 0; color: var(--ink);">已保存到情报库</h2>
+                        <p>该文章已归档，您可以在情报库中查看和搜索。</p>
+                    </div>
+                `;
+                document.getElementById('articleActions').style.display = 'none';
+                currentItem = null;
+            } catch (error) {
+                showToast('保存失败');
+            }
+        }
+
+        async function deleteReading() {
+            if (!currentItem) return;
+            
+            if (!confirm('确定要删除这篇文章吗？\n此操作不可撤销。')) return;
+            
+            try {
+                await apiCall(`/api/v1/reading-list/${currentItem.id}`, 'DELETE');
+                showToast('已删除');
+                await loadList();
+                
+                document.getElementById('contentBody').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">👈</div>
+                        <div>从左侧选择一篇文章开始阅读</div>
+                    </div>
+                `;
+                document.getElementById('articleActions').style.display = 'none';
+                currentItem = null;
+            } catch (error) {
+                showToast('删除失败');
+            }
+        }
+
+        function switchFilter(filter) {
+            currentFilter = filter;
+            
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-filter="${filter}"]`).classList.add('active');
+            
+            loadList();
+        }
+
+        // 初始化
+        (async function init() {
+            await loadMe();
+            await loadList();
+        })();
+    </script>
+</body>
+</html>
