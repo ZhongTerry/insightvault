@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | Mini</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;600;700&family=Cormorant+Garamond:wght@600&display=swap">
+    <style>
+        :root {
+            --bg-1: #0b0f1a;
+            --bg-2: #0f172a;
+            --bg-3: #1e293b;
+            --ink: #f8fafc;
+            --muted: #a7b4c4;
+            --primary: #38bdf8;
+            --accent: #fb7185;
+            --accent-2: #fbbf24;
+            --card: rgba(255, 255, 255, 0.06);
+            --line: rgba(148, 163, 184, 0.2);
+            --shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+            --radius: 18px;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Bricolage Grotesque', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(56, 189, 248, 0.18), transparent 35%),
+                radial-gradient(circle at 85% 10%, rgba(251, 113, 133, 0.15), transparent 40%),
+                radial-gradient(circle at 70% 80%, rgba(251, 191, 36, 0.12), transparent 45%),
+                linear-gradient(160deg, var(--bg-1), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 1100px; margin: 0 auto; padding: 42px 20px 80px; }
+        .nav {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 26px;
+        }
+        .brand {
+            font-family: 'Cormorant Garamond', serif;
+            font-size: 30px; letter-spacing: 0.6px;
+        }
+        .nav-links a {
+            color: var(--ink); text-decoration: none; margin-left: 16px; font-weight: 600;
+            opacity: 0.9;
+        }
+        .nav-links a.active { color: var(--primary); }
+        .hero {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 28px;
+            box-shadow: var(--shadow);
+            animation: rise 0.6s ease-out;
+        }
+        .hero h1 { margin: 0 0 10px; font-size: 28px; }
+        .hero p { margin: 0; color: var(--muted); font-size: 15px; }
+        .grid {
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 18px; margin-top: 18px;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            padding: 18px;
+            box-shadow: var(--shadow);
+            animation: floatIn 0.7s ease-out;
+        }
+        .card h3 { margin: 0 0 10px; font-size: 18px; }
+        .muted { color: var(--muted); font-size: 13px; }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .input, textarea, select {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            border-radius: 12px;
+            padding: 10px 12px;
+            font-family: inherit;
+            width: 100%;
+        }
+        textarea { min-height: 80px; resize: vertical; }
+        .btn {
+            border: none;
+            background: var(--primary);
+            color: #0b1220;
+            font-weight: 700;
+            padding: 10px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+        }
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--line);
+            color: var(--ink);
+        }
+        .btn-accent { background: var(--accent); color: #0b1220; }
+        .chip {
+            display: inline-flex; align-items: center; gap: 8px;
+            padding: 6px 12px; border-radius: 999px;
+            border: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.6);
+            font-size: 12px; color: var(--muted);
+        }
+        .switch {
+            position: relative; display: inline-block; width: 46px; height: 24px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute; cursor: pointer; inset: 0; background: #334155;
+            border-radius: 999px; transition: 0.2s;
+        }
+        .slider:before {
+            position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px;
+            background-color: white; transition: 0.2s; border-radius: 50%;
+        }
+        input:checked + .slider { background: var(--primary); }
+        input:checked + .slider:before { transform: translateX(22px); }
+        .list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+        .list-item {
+            border: 1px solid var(--line); border-radius: 12px; padding: 12px;
+            background: rgba(15, 23, 42, 0.65);
+        }
+        .list-item h4 { margin: 0 0 6px; font-size: 14px; }
+        .list-item .meta { color: var(--muted); font-size: 12px; }
+        .badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 2px 8px; border-radius: 8px;
+            font-size: 11px; background: rgba(56, 189, 248, 0.2); color: #7dd3fc;
+        }
+        .drop {
+            border: 1px dashed rgba(56, 189, 248, 0.6);
+            border-radius: 18px;
+            padding: 24px;
+            min-height: 160px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            background: rgba(15, 23, 42, 0.5);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .drop.drag { transform: translateY(-2px); border-color: var(--accent-2); }
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: #0b1220; color: #fff; padding: 10px 20px; border-radius: 12px;
+            font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            z-index: 2000; animation: toastIn 0.3s ease-out;
+        }
+        .app-list { display: grid; gap: 12px; }
+        .app-card {
+            display: flex; align-items: center; justify-content: space-between; gap: 12px;
+            padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line);
+            background: rgba(15, 23, 42, 0.6); text-decoration: none; color: var(--ink);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .app-card:hover { transform: translateY(-2px); border-color: rgba(56, 189, 248, 0.6); }
+        .app-card.disabled { opacity: 0.5; cursor: not-allowed; }
+
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes floatIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes toastIn { from { bottom: 0; opacity: 0; } to { bottom: 24px; opacity: 1; } }
+
+        @media (max-width: 900px) {
+            .wrap { padding: 28px 16px 60px; }
+            .nav { flex-direction: column; align-items: flex-start; }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="nav">
+            <div>
+                <div class="brand">InsightVault</div>
+                <div class="muted">&#x5C0F;&#x7A0B;&#x5E8F;&#x4E2D;&#x67A2; &#x00B7; &#x5FEB;&#x8239;&#x4E2D;&#x8F6C;&#x7AD9;</div>
+            </div>
+            <div class="nav-links">
+                <a href="/">&#x9996;&#x9875;</a>
+                <a href="/app">&#x60C5;&#x62A5;&#x5E93;</a>
+                <a href="/reading">&#x7A0D;&#x540E;&#x9605;&#x8BFB;</a>
+                <a href="/cloud">&#x4E91;&#x76D8;</a>
+                <a href="/mini" class="active">&#x5C0F;&#x7A0B;&#x5E8F;</a>
+                <a href="/groups">&#x56E2;&#x961F;</a>
+                <a href="/settings">&#x8BBE;&#x7F6E;</a>
+                <a href="/login" onclick="logout()">&#x9000;&#x51FA;</a>
+            </div>
+        </div>
+
+        <section class="hero">
+            <h1>&#x5C0F;&#x7A0B;&#x5E8F;&#x4E2D;&#x67A2;</h1>
+            <p>&#x96C6;&#x4E2D;&#x7BA1;&#x7406;&#x6570;&#x636E;&#x6388;&#x6743;&#x4E0E;&#x5C0F;&#x7A0B;&#x5E8F;&#x5217;&#x8868;&#x3002;</p>
+        </section>
+
+        <div class="grid">
+            <div class="card">
+                <h3>&#x5C0F;&#x7A0B;&#x5E8F;&#x5217;&#x8868;</h3>
+                <div class="muted" style="margin-bottom: 10px;">&#x6BCF;&#x4E2A;&#x5C0F;&#x7A0B;&#x5E8F;&#x72EC;&#x7ACB;&#x9875;&#x9762;&#xFF0C;&#x5FEB;&#x901F;&#x8BBF;&#x95EE;&#x3002;</div>
+                <div class="app-list">
+                    <a class="app-card" href="/mini/quick-send">
+                        <div>
+                            <div style="font-weight:700;">Quick Send</div>
+                            <div class="muted">&#x626B;&#x7801;&#x6216;&#x8F93;&#x5165;&#x9A8C;&#x8BC1;&#x7801;&#xFF0C;&#x5FEB;&#x901F;&#x4E0A;&#x4F20;</div>
+                        </div>
+                        <span class="badge">/mini/quick-send</span>
+                    </a>
+                    <div class="app-card disabled">
+                        <div>
+                            <div style="font-weight:700;">Coming Soon</div>
+                            <div class="muted">&#x7B49;&#x5F85;&#x66F4;&#x591A;&#x5C0F;&#x7A0B;&#x5E8F;&#x63A5;&#x5165;</div>
+                        </div>
+                        <span class="badge">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card desk-only">
+                <h3>&#x6570;&#x636E;&#x7533;&#x8BF7;</h3>
+                <div class="muted" style="margin-bottom: 10px;">&#x4E3A;&#x5C0F;&#x7A0B;&#x5E8F;&#x7533;&#x8BF7;&#x4E00;&#x6B21;&#x6570;&#x636E;&#x6388;&#x6743;&#x3002;</div>
+                <div style="display: grid; gap: 10px;">
+                    <input class="input" id="appName" placeholder="App Name" value="MiniBridge" />
+                    <div class="row">
+                        <label class="chip"><input type="checkbox" class="dataType" value="profile" checked> profile</label>
+                        <label class="chip"><input type="checkbox" class="dataType" value="stats" checked> stats</label>
+                    </div>
+                    <textarea id="requestPurpose" placeholder="purpose"></textarea>
+                    <button class="btn" onclick="submitRequest()">&#x53D1;&#x8D77;&#x7533;&#x8BF7;</button>
+                </div>
+                <div id="requestResult" class="muted" style="margin-top: 10px;"></div>
+            </div>
+
+            <div class="card desk-only">
+                <div class="row" style="justify-content: space-between;">
+                    <h3>&#x5BA1;&#x6279;&#x4E2D;&#x5FC3;</h3>
+                    <div class="row">
+                        <span class="muted">&#x7EDF;&#x4E00;&#x63D0;&#x4F9B;&#x6570;&#x636E;</span>
+                        <label class="switch">
+                            <input type="checkbox" id="autoProvide" onchange="toggleAutoProvide()">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                </div>
+                <div class="muted">&#x7B49;&#x5F85;&#x5BA1;&#x6279;&#x7684;&#x7533;&#x8BF7;&#x4F1A;&#x663E;&#x793A;&#x5728;&#x8FD9;&#x91CC;&#x3002;</div>
+                <div id="requestList" class="list"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tokenKey = 'authToken';
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get('token');
+        if (urlToken) {
+            localStorage.setItem(tokenKey, urlToken);
+            params.delete('token');
+            const next = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+            history.replaceState(null, '', next);
+        }
+
+        const requestList = document.getElementById('requestList');
+        const autoProvide = document.getElementById('autoProvide');
+        const requestResult = document.getElementById('requestResult');
+
+        function getToken() {
+            return localStorage.getItem(tokenKey) || '';
+        }
+
+        function logout() {
+            localStorage.removeItem(tokenKey);
+            localStorage.removeItem('authUser');
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
+        }
+
+
+        async function apiAuth(path, method = 'GET', body = null) {
+            const token = getToken();
+            if (!token) {
+                throw new Error('NO_TOKEN');
+            }
+            const options = { method, headers: { 'Authorization': 'Bearer ' + token } };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch(path, options);
+            if (res.status === 401) {
+                logout();
+                window.location.href = '/login';
+                return null;
+            }
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Request failed');
+            }
+            return await res.json();
+        }
+
+        async function loadSettings() {
+            try {
+                const res = await apiAuth('/api/v1/mini/settings');
+                if (res && res.data) {
+                    autoProvide.checked = !!res.data.auto_provide;
+                }
+            } catch (err) {
+                if (err.message === 'NO_TOKEN') return;
+                console.error(err);
+            }
+        }
+
+        async function toggleAutoProvide() {
+            try {
+                await apiAuth('/api/v1/mini/settings', 'PUT', { auto_provide: autoProvide.checked });
+                showToast('\u5DF2\u66F4\u65B0');
+            } catch (err) {
+                showToast('\u66F4\u65B0\u5931\u8D25');
+            }
+        }
+
+        async function loadRequests() {
+            try {
+                const res = await apiAuth('/api/v1/mini/data-requests?status=pending');
+                const data = res && res.data ? res.data : [];
+                renderRequests(data);
+            } catch (err) {
+                if (err.message === 'NO_TOKEN') return;
+                requestList.innerHTML = '<div class="muted">empty</div>';
+            }
+        }
+
+        function renderRequests(list) {
+            if (!list.length) {
+                requestList.innerHTML = '<div class="muted">empty</div>';
+                return;
+            }
+            requestList.innerHTML = '';
+            list.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'list-item';
+                div.innerHTML = `
+                    <h4>${item.app_name}</h4>
+                    <div class="meta">types: ${(item.data_types || []).join(', ') || '-'}</div>
+                    <div class="meta">${item.purpose || ''}</div>
+                    <div class="row" style="margin-top: 10px;">
+                        <button class="btn" onclick="approveRequest(${item.id})">approve</button>
+                        <button class="btn btn-ghost" onclick="denyRequest(${item.id})">deny</button>
+                    </div>
+                `;
+                requestList.appendChild(div);
+            });
+        }
+
+        async function submitRequest() {
+            const appName = document.getElementById('appName').value.trim();
+            const purpose = document.getElementById('requestPurpose').value.trim();
+            const types = Array.from(document.querySelectorAll('.dataType:checked')).map(i => i.value);
+            try {
+                const res = await apiAuth('/api/v1/mini/data-requests', 'POST', {
+                    app_name: appName,
+                    data_types: types,
+                    purpose
+                });
+                if (res && res.data) {
+                    requestResult.textContent = res.data.status === 'approved'
+                        ? '\u5DF2\u81EA\u52A8\u5BA1\u6279\uFF0Cgrant: ' + (res.data.grant_token || '-')
+                        : '\u5DF2\u63D0\u4EA4\u7B49\u5F85\u5BA1\u6279';
+                    loadRequests();
+                }
+            } catch (err) {
+                showToast('\u7533\u8BF7\u5931\u8D25');
+            }
+        }
+
+        async function approveRequest(id) {
+            try {
+                const res = await apiAuth(`/api/v1/mini/data-requests/${id}/approve`, 'POST', {
+                    auto_provide: autoProvide.checked
+                });
+                if (res && res.data) {
+                    showToast('\u5DF2\u6279\u51C6');
+                    loadRequests();
+                }
+            } catch (err) {
+                showToast('\u64CD\u4F5C\u5931\u8D25');
+            }
+        }
+
+        async function denyRequest(id) {
+            try {
+                await apiAuth(`/api/v1/mini/data-requests/${id}/deny`, 'POST', {});
+                showToast('\u5DF2\u62D2\u7EDD');
+                loadRequests();
+            } catch (err) {
+                showToast('\u64CD\u4F5C\u5931\u8D25');
+            }
+        }
+
+        window.onload = async () => {
+            await loadSettings();
+            await loadRequests();
+        };
+    </script>
+</body>
+</html>

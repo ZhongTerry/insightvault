@@ -370,6 +370,53 @@ async def lifespan(app: FastAPI):
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_group ON cloud_items (group_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_name ON cloud_items (name);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_cloud_shared ON cloud_items (is_shared);")
+
+            # 小程序 / 快船相关表
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mini_user_settings (
+                    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                    auto_provide BOOLEAN DEFAULT FALSE,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mini_data_requests (
+                    id SERIAL PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    app_name TEXT NOT NULL,
+                    data_types TEXT[],
+                    purpose TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    decision_note TEXT,
+                    grant_token TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    decided_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_requests_owner ON mini_data_requests (owner_user_id);")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_requests_status ON mini_data_requests (status);")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mini_upload_sessions (
+                    code TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    expires_at TIMESTAMP WITH TIME ZONE,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    last_used TIMESTAMP WITH TIME ZONE
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_sessions_owner ON mini_upload_sessions (owner_user_id);")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS mini_upload_files (
+                    id SERIAL PRIMARY KEY,
+                    session_code TEXT REFERENCES mini_upload_sessions(code) ON DELETE CASCADE,
+                    cloud_item_id INTEGER REFERENCES cloud_items(id) ON DELETE CASCADE,
+                    filename TEXT NOT NULL,
+                    size BIGINT DEFAULT 0,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_files_session ON mini_upload_files (session_code);")
             
             logger.info("数据库环境检查完成")
 
@@ -572,6 +619,34 @@ def normalize_tags(raw) -> List[str]:
         tags.append(name)
     return tags
 
+def normalize_data_types(raw) -> List[str]:
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        parts = raw.split(",")
+    elif isinstance(raw, list):
+        parts = raw
+    else:
+        return []
+
+    seen = set()
+    types: List[str] = []
+    for item in parts:
+        if not isinstance(item, str):
+            continue
+        name = item.strip().lower()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        types.append(name[:32])
+    return types
+
+def generate_verification_code(length: int = 6) -> str:
+    if length < 4:
+        length = 4
+    digits = "0123456789"
+    return "".join(secrets.choice(digits) for _ in range(length))
+
 async def set_item_tags(
     pool: AsyncConnectionPool,
     item_id: int,
@@ -707,6 +782,39 @@ async def get_cloud_item_for_user(request: Request, item_id: int, user: dict) ->
     if not item:
         raise HTTPException(status_code=404, detail="Cloud item not found")
     return dict(item)
+
+async def ensure_quick_send_folder(request: Request, owner_user_id: int) -> int:
+    folder_name = "quick_send"
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT id
+                FROM cloud_items
+                WHERE owner_user_id = %s
+                  AND item_type = 'folder'
+                  AND name = %s
+                  AND parent_id IS NULL
+                  AND visibility = 'private'
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (owner_user_id, folder_name)
+            )
+            row = await cur.fetchone()
+            if row:
+                return int(row["id"])
+
+            await cur.execute(
+                """
+                INSERT INTO cloud_items (owner_user_id, parent_id, name, item_type, visibility, group_id, tags)
+                VALUES (%s, NULL, %s, 'folder', 'private', NULL, %s)
+                RETURNING id
+                """,
+                (owner_user_id, folder_name, ["quick_send"])
+            )
+            row = await cur.fetchone()
+            return int(row["id"])
 
 # --- 4. 鉴权与用户组 ---
 
@@ -1043,6 +1151,435 @@ async def reading_page(request: Request):
 @app.get("/cloud")
 async def cloud_page(request: Request):
     return templates.TemplateResponse("cloud.html", {"request": request})
+
+@app.get("/mini")
+async def mini_page(request: Request):
+    return templates.TemplateResponse("mini.html", {"request": request})
+
+@app.get("/mini/quick-send")
+async def mini_quick_send_page(request: Request):
+    return templates.TemplateResponse("mini_quick_send.html", {"request": request})
+
+@app.get("/quick")
+async def quick_page(request: Request):
+    return templates.TemplateResponse("quick.html", {"request": request})
+
+@app.get("/api/v1/mini/settings")
+async def api_v1_mini_get_settings(
+    request: Request,
+    user: dict = Depends(require_scope('read'))
+):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT auto_provide FROM mini_user_settings WHERE user_id = %s",
+                (user["id"],)
+            )
+            row = await cur.fetchone()
+            if not row:
+                await cur.execute(
+                    "INSERT INTO mini_user_settings (user_id, auto_provide) VALUES (%s, FALSE)",
+                    (user["id"],)
+                )
+                auto_provide = False
+            else:
+                auto_provide = bool(row["auto_provide"])
+    return {"status": "success", "data": {"auto_provide": auto_provide}}
+
+@app.put("/api/v1/mini/settings")
+async def api_v1_mini_update_settings(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    auto_provide = bool(data.get("auto_provide"))
+    async with request.app.state.db_pool.connection() as conn:
+        await conn.execute(
+            """
+            INSERT INTO mini_user_settings (user_id, auto_provide, updated_at)
+            VALUES (%s, %s, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id)
+            DO UPDATE SET auto_provide = EXCLUDED.auto_provide, updated_at = CURRENT_TIMESTAMP
+            """,
+            (user["id"], auto_provide)
+        )
+    return {"status": "success", "data": {"auto_provide": auto_provide}}
+
+@app.post("/api/v1/mini/data-requests")
+async def api_v1_mini_create_request(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    app_name = (data.get("app_name") or "MiniApp").strip()[:60]
+    data_types = normalize_data_types(data.get("data_types"))
+    purpose = (data.get("purpose") or "").strip()[:240]
+
+    if not data_types:
+        raise HTTPException(status_code=400, detail="data_types is required")
+
+    auto_provide = False
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT auto_provide FROM mini_user_settings WHERE user_id = %s",
+                (user["id"],)
+            )
+            row = await cur.fetchone()
+            if row:
+                auto_provide = bool(row["auto_provide"])
+
+    status = "approved" if auto_provide else "pending"
+    grant_token = secrets.token_urlsafe(16) if auto_provide else None
+    decided_at = datetime.now(timezone.utc) if auto_provide else None
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                INSERT INTO mini_data_requests (owner_user_id, app_name, data_types, purpose, status, grant_token, decided_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, created_at
+                """,
+                (user["id"], app_name, data_types, purpose, status, grant_token, decided_at)
+            )
+            row = await cur.fetchone()
+
+    return {
+        "status": "success",
+        "data": {
+            "id": row["id"],
+            "status": status,
+            "grant_token": grant_token,
+            "created_at": row["created_at"].isoformat() if row and row.get("created_at") else None
+        }
+    }
+
+@app.get("/api/v1/mini/data-requests")
+async def api_v1_mini_list_requests(
+    request: Request,
+    status: Optional[str] = Query(None),
+    user: dict = Depends(require_scope('read'))
+):
+    query = "SELECT * FROM mini_data_requests WHERE owner_user_id = %s"
+    params = [user["id"]]
+    if status:
+        query += " AND status = %s"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(query, tuple(params))
+            rows = await cur.fetchall()
+
+    results = [dict(r) for r in rows]
+    for r in results:
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+        if isinstance(r.get("decided_at"), datetime):
+            r["decided_at"] = r["decided_at"].isoformat()
+    return {"status": "success", "data": results}
+
+@app.post("/api/v1/mini/data-requests/{request_id}/approve")
+async def api_v1_mini_approve_request(
+    request: Request,
+    request_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    auto_provide = bool(data.get("auto_provide"))
+    note = (data.get("note") or "").strip()[:240]
+    grant_token = secrets.token_urlsafe(16)
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                UPDATE mini_data_requests
+                SET status = 'approved', decision_note = %s, grant_token = %s, decided_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND owner_user_id = %s AND status = 'pending'
+                RETURNING id
+                """,
+                (note, grant_token, request_id, user["id"])
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Request not found or already decided")
+
+            if auto_provide:
+                await cur.execute(
+                    """
+                    INSERT INTO mini_user_settings (user_id, auto_provide, updated_at)
+                    VALUES (%s, TRUE, CURRENT_TIMESTAMP)
+                    ON CONFLICT (user_id)
+                    DO UPDATE SET auto_provide = TRUE, updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (user["id"],)
+                )
+
+    return {"status": "success", "data": {"id": request_id, "grant_token": grant_token}}
+
+@app.post("/api/v1/mini/data-requests/{request_id}/deny")
+async def api_v1_mini_deny_request(
+    request: Request,
+    request_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    note = (data.get("note") or "").strip()[:240]
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                UPDATE mini_data_requests
+                SET status = 'denied', decision_note = %s, decided_at = CURRENT_TIMESTAMP
+                WHERE id = %s AND owner_user_id = %s AND status = 'pending'
+                RETURNING id
+                """,
+                (note, request_id, user["id"])
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Request not found or already decided")
+    return {"status": "success", "data": {"id": request_id}}
+
+@app.get("/api/v1/mini/data")
+async def api_v1_mini_get_data(
+    request: Request,
+    grant_token: str = Query(...),
+    types: Optional[str] = Query(None)
+):
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT owner_user_id, data_types
+                FROM mini_data_requests
+                WHERE grant_token = %s AND status = 'approved'
+                """,
+                (grant_token,)
+            )
+            req = await cur.fetchone()
+            if not req:
+                raise HTTPException(status_code=403, detail="Invalid grant token")
+
+            user_id = int(req["owner_user_id"])
+            requested_types = normalize_data_types(types) or (req.get("data_types") or [])
+
+            data: dict = {"types": requested_types}
+
+            if "profile" in requested_types:
+                await cur.execute("SELECT email, name FROM users WHERE id = %s", (user_id,))
+                profile = await cur.fetchone()
+                data["profile"] = {
+                    "email": profile["email"],
+                    "name": profile["name"]
+                } if profile else None
+
+            if "stats" in requested_types:
+                await cur.execute("SELECT COUNT(*) AS cnt FROM intelligence_vault WHERE owner_user_id = %s", (user_id,))
+                iv = await cur.fetchone()
+                await cur.execute("SELECT COUNT(*) AS cnt FROM cloud_items WHERE owner_user_id = %s AND item_type = 'file'", (user_id,))
+                files = await cur.fetchone()
+                await cur.execute("SELECT COUNT(*) AS cnt FROM reading_list WHERE owner_user_id = %s", (user_id,))
+                reading = await cur.fetchone()
+                data["stats"] = {
+                    "vault_items": int(iv["cnt"]),
+                    "cloud_files": int(files["cnt"]),
+                    "reading_items": int(reading["cnt"])
+                }
+
+    return {"status": "success", "data": data}
+
+@app.post("/api/v1/mini/upload-sessions")
+async def api_v1_mini_create_upload_session(
+    request: Request,
+    data: Optional[dict] = None,
+    user: dict = Depends(require_scope('cloud'))
+):
+    ttl_minutes = 30
+    if isinstance(data, dict) and data.get("ttl_minutes") is not None:
+        try:
+            ttl_minutes = int(data.get("ttl_minutes"))
+        except (ValueError, TypeError):
+            ttl_minutes = 30
+    ttl_minutes = max(5, min(ttl_minutes, 180))
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ttl_minutes)
+
+    code = None
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            for _ in range(6):
+                candidate = generate_verification_code(6)
+                await cur.execute(
+                    "SELECT 1 FROM mini_upload_sessions WHERE code = %s",
+                    (candidate,)
+                )
+                if not await cur.fetchone():
+                    code = candidate
+                    break
+            if not code:
+                raise HTTPException(status_code=500, detail="Unable to allocate code")
+
+            await cur.execute(
+                """
+                INSERT INTO mini_upload_sessions (code, owner_user_id, expires_at)
+                VALUES (%s, %s, %s)
+                """,
+                (code, user["id"], expires_at)
+            )
+
+    return {
+        "status": "success",
+        "data": {
+            "code": code,
+            "expires_at": expires_at.isoformat(),
+            "upload_url": f"/mini/quick-send?code={code}"
+        }
+    }
+
+@app.get("/api/v1/mini/upload-sessions/{code}")
+async def api_v1_mini_get_upload_session(
+    request: Request,
+    code: str
+):
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT code, expires_at, status FROM mini_upload_sessions WHERE code = %s",
+                (code,)
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+    expires_at = row.get("expires_at")
+    expired = False
+    if isinstance(expires_at, datetime):
+        expired = expires_at < datetime.now(timezone.utc)
+
+    return {
+        "status": "success",
+        "data": {
+            "code": row["code"],
+            "status": row["status"],
+            "expired": expired,
+            "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else None
+        }
+    }
+
+@app.get("/api/v1/mini/upload-sessions/{code}/files")
+async def api_v1_mini_list_upload_files(
+    request: Request,
+    code: str,
+    user: dict = Depends(require_scope('cloud'))
+):
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT owner_user_id FROM mini_upload_sessions WHERE code = %s",
+                (code,)
+            )
+            session = await cur.fetchone()
+            if not session or int(session["owner_user_id"]) != int(user["id"]):
+                raise HTTPException(status_code=403, detail="Not allowed")
+
+            await cur.execute(
+                """
+                SELECT id, cloud_item_id, filename, size, created_at
+                FROM mini_upload_files
+                WHERE session_code = %s
+                ORDER BY created_at DESC
+                """,
+                (code,)
+            )
+            rows = await cur.fetchall()
+
+    results = [dict(r) for r in rows]
+    for r in results:
+        if isinstance(r.get("created_at"), datetime):
+            r["created_at"] = r["created_at"].isoformat()
+    return {"status": "success", "data": results}
+
+@app.post("/api/v1/mini/upload")
+async def api_v1_mini_upload_file(
+    request: Request,
+    code: str = Query(...),
+    file: UploadFile = File(...)
+):
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="File is required")
+    if not code.isdigit() or len(code) != 6:
+        raise HTTPException(status_code=400, detail="Invalid code")
+
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT owner_user_id, expires_at, status FROM mini_upload_sessions WHERE code = %s",
+                (code,)
+            )
+            session = await cur.fetchone()
+            if not session:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+            expires_at = session.get("expires_at")
+            if session.get("status") != "active":
+                raise HTTPException(status_code=400, detail="Session inactive")
+            if isinstance(expires_at, datetime) and expires_at < datetime.now(timezone.utc):
+                raise HTTPException(status_code=400, detail="Session expired")
+
+            owner_user_id = int(session["owner_user_id"])
+
+            parent_id = await ensure_quick_send_folder(request, owner_user_id)
+
+            filename = safe_filename(file.filename)
+            mime_type = file.content_type or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+            storage_path = cloud_storage_path(owner_user_id, filename)
+            meta = save_upload_stream(file, storage_path)
+            if not ensure_within_storage(storage_path):
+                raise HTTPException(status_code=400, detail="Invalid storage path")
+
+            await cur.execute(
+                """
+                INSERT INTO cloud_items (owner_user_id, parent_id, name, item_type, size, mime_type, storage_path,
+                                         checksum, visibility, group_id, tags)
+                VALUES (%s, %s, %s, 'file', %s, %s, %s, %s, 'private', NULL, %s)
+                RETURNING id
+                """,
+                (owner_user_id, parent_id, filename, meta["size"], mime_type, storage_path, meta["checksum"], ["mini-ship", "quick_send"])
+            )
+            row = await cur.fetchone()
+            item_id = row["id"]
+
+            await cur.execute(
+                """
+                INSERT INTO cloud_versions (item_id, version_num, size, checksum, storage_path, created_by)
+                VALUES (%s, 1, %s, %s, %s, %s)
+                """,
+                (item_id, meta["size"], meta["checksum"], storage_path, owner_user_id)
+            )
+
+            await cur.execute(
+                """
+                INSERT INTO mini_upload_files (session_code, cloud_item_id, filename, size)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (code, item_id, filename, meta["size"])
+            )
+
+            await cur.execute(
+                "UPDATE mini_upload_sessions SET last_used = CURRENT_TIMESTAMP WHERE code = %s",
+                (code,)
+            )
+
+    return {"status": "success", "data": {"id": item_id, "name": filename, "size": meta["size"]}}
 
 # 异步背景任务：向量化单个项目
 async def background_vectorize_item(pool: AsyncConnectionPool, item_id: int, text_to_vectorize: str):

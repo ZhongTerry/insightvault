@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InsightVault | Quick Send</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&family=Fraunces:wght@600&display=swap">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --bg-2: #1f2937;
+            --card: rgba(255, 255, 255, 0.06);
+            --ink: #f8fafc;
+            --muted: #cbd5f5;
+            --accent: #38bdf8;
+            --accent-2: #fb7185;
+            --line: rgba(255, 255, 255, 0.1);
+            --radius: 16px;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: 'Manrope', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(circle at 10% 20%, rgba(56, 189, 248, 0.15), transparent 35%),
+                radial-gradient(circle at 80% 10%, rgba(251, 113, 133, 0.18), transparent 30%),
+                linear-gradient(160deg, var(--bg), var(--bg-2));
+            min-height: 100vh;
+        }
+        .wrap { max-width: 980px; margin: 0 auto; padding: 40px 18px 80px; }
+        .header {
+            display: flex; align-items: center; justify-content: space-between; gap: 16px;
+            margin-bottom: 24px;
+        }
+        .title {
+            font-family: 'Fraunces', serif;
+            font-size: 28px;
+            letter-spacing: 0.4px;
+        }
+        .nav a {
+            color: var(--ink); text-decoration: none; font-weight: 600; margin-left: 14px;
+        }
+        .hero {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 28px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        }
+        .hero h2 { margin: 0 0 8px; font-size: 20px; }
+        .hero p { margin: 0; color: var(--muted); }
+
+        .grid {
+            display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px;
+            margin-top: 18px;
+        }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            padding: 18px;
+        }
+        .drop {
+            border: 1px dashed rgba(56, 189, 248, 0.6);
+            border-radius: 18px;
+            padding: 24px;
+            min-height: 180px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            background: rgba(15, 23, 42, 0.5);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+        .drop.drag { transform: translateY(-2px); border-color: var(--accent-2); }
+        .btn {
+            border: none;
+            background: var(--accent);
+            color: #0b1220;
+            font-weight: 700;
+            padding: 10px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+        }
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--line);
+            color: var(--ink);
+        }
+        .muted { color: var(--muted); font-size: 13px; }
+        .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        .input {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--line);
+            color: var(--ink);
+            border-radius: 10px;
+            padding: 10px 12px;
+            flex: 1;
+            min-width: 180px;
+        }
+        .queue {
+            display: flex; flex-direction: column; gap: 10px; margin-top: 14px;
+        }
+        .queue-item {
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 10px 12px;
+        }
+        .bar {
+            height: 6px; border-radius: 999px; background: rgba(255, 255, 255, 0.1);
+            overflow: hidden; margin-top: 8px;
+        }
+        .bar > span {
+            display: block; height: 100%; width: 0%; background: var(--accent-2);
+            transition: width 0.2s ease;
+        }
+        .badge {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 2px 8px; border-radius: 8px;
+            font-size: 11px; background: rgba(56, 189, 248, 0.2); color: #7dd3fc;
+        }
+        .list {
+            display: flex; flex-direction: column; gap: 10px; margin-top: 12px;
+        }
+        .list-item {
+            border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+            background: rgba(15, 23, 42, 0.65);
+        }
+        .code-box {
+            font-family: 'Courier New', monospace;
+            font-size: 18px; letter-spacing: 6px;
+            padding: 8px 12px; border-radius: 10px;
+            background: rgba(2, 6, 23, 0.8);
+            border: 1px solid var(--line);
+        }
+        .qr-wrap {
+            display: flex; align-items: center; justify-content: center;
+            width: 180px; height: 180px; padding: 10px;
+            border-radius: 14px; border: 1px solid var(--line);
+            background: rgba(2, 6, 23, 0.6);
+        }
+        .qr-canvas { width: 160px; height: 160px; }
+        .qr-img { width: 160px; height: 160px; object-fit: contain; display: none; }
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: #0b1220; color: #fff; padding: 10px 20px; border-radius: 12px;
+            font-size: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            z-index: 2000; animation: toastIn 0.3s ease-out;
+        }
+
+        @keyframes toastIn { from { bottom: 0; opacity: 0; } to { bottom: 24px; opacity: 1; } }
+
+        @media (max-width: 900px) {
+            .grid { grid-template-columns: 1fr; }
+            .header { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="header">
+            <div class="title">Quick Send</div>
+            <div class="nav">
+                <a href="/mini">小程序中枢</a>
+                <a href="/quick">原 Quick</a>
+            </div>
+        </div>
+
+        <div class="hero">
+            <h2>扫码或输入验证码上传</h2>
+            <p>电脑端在小程序中枢生成验证码与二维码，手机打开本页上传。</p>
+        </div>
+
+        <div class="grid">
+            <div class="card">
+                <div class="row" style="margin-bottom: 10px;">
+                    <input class="input" id="codeInput" placeholder="输入 6 位验证码" maxlength="6" />
+                    <button class="btn" id="checkBtn">验证</button>
+                </div>
+                <div class="row" style="margin-bottom: 12px;">
+                    <span class="badge" id="codeStatus">未验证</span>
+                    <span class="muted" id="codeExpire">--</span>
+                </div>
+                <div class="row" style="margin-bottom: 10px;">
+                    <button class="btn" id="pickBtn">选择文件</button>
+                    <span class="muted">支持拖拽、相册/相机</span>
+                </div>
+
+                <div class="drop" id="dropZone">
+                    <div>
+                        <div style="font-size: 16px; font-weight: 700;">拖拽文件到这里</div>
+                        <div class="muted" style="margin-top: 6px;">或点击选择文件</div>
+                    </div>
+                </div>
+
+                <input id="fileInput" type="file" multiple accept="image/*,application/pdf,video/*,audio/*" capture="environment" style="display:none;" />
+
+                <div class="queue" id="uploadQueue"></div>
+            </div>
+
+            <div class="card">
+                <div style="font-weight: 700; margin-bottom: 8px;">使用提示</div>
+                <div class="muted" style="margin-bottom: 10px;">
+                    - 请确保验证码仍在有效期内<br />
+                    - 上传成功后文件会出现在云盘里<br />
+                    - 如果失败请重新验证验证码
+                </div>
+                <div style="font-weight: 700; margin: 18px 0 8px;">生成验证码</div>
+                <div class="row" style="margin-bottom: 10px;">
+                    <button class="btn" id="createBtn">生成验证码</button>
+                    <button class="btn btn-ghost" id="copyLinkBtn">复制链接</button>
+                </div>
+                <div class="row" style="margin-bottom: 6px;">
+                    <div class="code-box" id="sessionCode">------</div>
+                    <span class="badge" id="sessionExpire">--</span>
+                </div>
+                <div class="muted" id="sessionLink">/mini/quick-send?code=</div>
+                <div class="row" style="margin-top: 10px;">
+                    <div class="qr-wrap">
+                        <canvas id="qrCanvas" class="qr-canvas"></canvas>
+                        <img id="qrImg" class="qr-img" alt="QR" />
+                    </div>
+                </div>
+                <div style="font-weight: 700; margin: 18px 0 8px;">当前验证码</div>
+                <div class="row">
+                    <div class="input" id="currentCode">------</div>
+                    <button class="btn btn-ghost" id="clearBtn">清空</button>
+                </div>
+                <div style="font-weight: 700; margin: 18px 0 8px;">已接收文件</div>
+                <div class="list" id="sessionFiles">
+                    <div class="muted">暂无文件</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/lib/browser.min.js"></script>
+    <script>
+        const tokenKey = 'authToken';
+        const params = new URLSearchParams(window.location.search);
+        const urlToken = params.get('token');
+        if (urlToken) {
+            localStorage.setItem(tokenKey, urlToken);
+            params.delete('token');
+            const next = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+            history.replaceState(null, '', next);
+        }
+        const codeParam = (params.get('code') || '').trim();
+
+        const codeInput = document.getElementById('codeInput');
+        const checkBtn = document.getElementById('checkBtn');
+        const codeStatus = document.getElementById('codeStatus');
+        const codeExpire = document.getElementById('codeExpire');
+        const currentCode = document.getElementById('currentCode');
+        const clearBtn = document.getElementById('clearBtn');
+
+        const pickBtn = document.getElementById('pickBtn');
+        const fileInput = document.getElementById('fileInput');
+        const dropZone = document.getElementById('dropZone');
+        const uploadQueue = document.getElementById('uploadQueue');
+
+        const createBtn = document.getElementById('createBtn');
+        const copyLinkBtn = document.getElementById('copyLinkBtn');
+        const sessionCode = document.getElementById('sessionCode');
+        const sessionExpire = document.getElementById('sessionExpire');
+        const sessionLink = document.getElementById('sessionLink');
+        const qrCanvas = document.getElementById('qrCanvas');
+        const qrImg = document.getElementById('qrImg');
+        const sessionFiles = document.getElementById('sessionFiles');
+
+        let activeCode = '';
+        const sessionStorageKey = 'miniQuickSessionCode';
+        let pollTimer = null;
+        let knownFileIds = new Set();
+
+        function getToken() {
+            return localStorage.getItem(tokenKey) || '';
+        }
+
+        async function apiAuth(path, method = 'GET', body = null) {
+            const token = getToken();
+            if (!token) throw new Error('NO_TOKEN');
+            const options = { method, headers: { 'Authorization': 'Bearer ' + token } };
+            if (body) {
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(body);
+            }
+            const res = await fetch(path, options);
+            if (res.status === 401) {
+                throw new Error('NO_TOKEN');
+            }
+            if (!res.ok) {
+                const text = await res.text();
+                throw new Error(text || 'Request failed');
+            }
+            return await res.json();
+        }
+
+        function showToast(msg) {
+            const t = document.createElement('div');
+            t.className = 'toast';
+            t.innerText = msg;
+            document.body.appendChild(t);
+            setTimeout(() => t.remove(), 2500);
+        }
+
+        function renderQr(link) {
+            if (!qrCanvas) return;
+            const ctx = qrCanvas.getContext('2d');
+            if (!link) {
+                ctx.clearRect(0, 0, qrCanvas.width, qrCanvas.height);
+                if (qrImg) {
+                    qrImg.style.display = 'none';
+                    qrImg.removeAttribute('src');
+                }
+                qrCanvas.style.display = 'block';
+                return;
+            }
+
+            const fallbackToImg = () => {
+                if (!qrImg) return;
+                const api = ' https://api.2dcode.biz/v1/create-qr-code/';
+                qrImg.src = `${api}?size=160x160&data=${encodeURIComponent(link)}`;
+                qrImg.style.display = 'block';
+                qrCanvas.style.display = 'none';
+            };
+
+            if (!window.QRCode || typeof window.QRCode.toCanvas !== 'function') {
+                fallbackToImg();
+                return;
+            }
+
+            qrCanvas.style.display = 'block';
+            if (qrImg) qrImg.style.display = 'none';
+
+            QRCode.toCanvas(
+                qrCanvas,
+                link,
+                {
+                    width: 160,
+                    margin: 1,
+                    color: { dark: '#f8fafc', light: '#00000000' }
+                },
+                (err) => {
+                    if (err) {
+                        console.error(err);
+                        fallbackToImg();
+                    }
+                }
+            );
+        }
+
+        async function createSession() {
+            try {
+                const res = await apiAuth('/api/v1/mini/upload-sessions', 'POST', { ttl_minutes: 30 });
+                if (res && res.data) {
+                    sessionCode.textContent = res.data.code;
+                    sessionLink.textContent = res.data.upload_url;
+                    if (res.data.expires_at) {
+                        sessionExpire.textContent = res.data.expires_at.split('T')[1].slice(0, 5);
+                    }
+                    codeInput.value = res.data.code;
+                    checkCode(false);
+                    renderQr(window.location.origin + res.data.upload_url);
+                    showToast('验证码已生成');
+                }
+            } catch (err) {
+                if (err.message === 'NO_TOKEN') {
+                    showToast('请先登录或携带 token 访问');
+                } else {
+                    showToast('生成失败');
+                }
+            }
+        }
+
+        function copySessionLink() {
+            const link = sessionLink.textContent;
+            if (!link || link.endsWith('=')) {
+                showToast('请先生成验证码');
+                return;
+            }
+            navigator.clipboard.writeText(window.location.origin + link)
+                .then(() => showToast('已复制'))
+                .catch(() => showToast('复制失败'));
+        }
+
+        async function checkCode(showMsg = true) {
+            const code = (codeInput.value || '').trim();
+            if (!code || code.length !== 6) {
+                if (showMsg) showToast('请输入 6 位验证码');
+                return false;
+            }
+            try {
+                const res = await fetch(`/api/v1/mini/upload-sessions/${code}`);
+                const data = await res.json();
+                if (!res.ok || !data || data.data?.expired) {
+                    if (showMsg) showToast('验证码无效或已过期');
+                    codeStatus.textContent = '无效';
+                    return false;
+                }
+                activeCode = code;
+                currentCode.textContent = code;
+                codeStatus.textContent = '可用';
+                if (data.data?.expires_at) {
+                    codeExpire.textContent = data.data.expires_at.split('T')[1].slice(0, 5);
+                }
+                startSessionWatch(code, false);
+                if (showMsg) showToast('验证码可用');
+                return true;
+            } catch (err) {
+                if (showMsg) showToast('验证失败');
+                return false;
+            }
+        }
+
+        function stopSessionWatch() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        async function startSessionWatch(code, silent) {
+            if (!code) return;
+            const token = getToken();
+            if (!token) {
+                sessionFiles.innerHTML = '<div class="muted">登录后可查看已接收文件</div>';
+                return;
+            }
+            activeCode = code;
+            knownFileIds = new Set();
+            localStorage.setItem(sessionStorageKey, code);
+            await loadSessionFiles(code, silent);
+            stopSessionWatch();
+            pollTimer = setInterval(() => {
+                loadSessionFiles(code, false);
+            }, 3000);
+        }
+
+        async function loadSessionFiles(code, silent) {
+            if (!code) return;
+            try {
+                const res = await apiAuth(`/api/v1/mini/upload-sessions/${code}/files`);
+                const list = res && res.data ? res.data : [];
+                if (!list.length) {
+                    sessionFiles.innerHTML = '<div class="muted">暂无文件</div>';
+                    return;
+                }
+                const newIds = new Set();
+                let hasNew = false;
+                sessionFiles.innerHTML = '';
+                const token = getToken();
+                list.forEach(item => {
+                    newIds.add(item.id);
+                    if (!knownFileIds.has(item.id)) {
+                        hasNew = true;
+                    }
+                    const row = document.createElement('div');
+                    row.className = 'list-item';
+                    row.innerHTML = `
+                        <div style="display:flex;justify-content:space-between;gap:8px;">
+                            <div>
+                                <div style="font-weight:600;">${item.filename}</div>
+                                <div class="muted">${formatSize(item.size)}</div>
+                            </div>
+                            <a class="badge" href="/api/v1/cloud/items/${item.cloud_item_id}/download?token=${token}" target="_blank">download</a>
+                        </div>
+                    `;
+                    sessionFiles.appendChild(row);
+                });
+                knownFileIds = newIds;
+                if (hasNew && !silent) {
+                    showToast('收到新文件');
+                }
+            } catch (err) {
+                sessionFiles.innerHTML = '<div class="muted">加载失败</div>';
+            }
+        }
+
+        async function restoreSessionWatch() {
+            const saved = (localStorage.getItem(sessionStorageKey) || '').trim();
+            if (!saved || saved.length !== 6) return;
+            try {
+                const res = await fetch(`/api/v1/mini/upload-sessions/${saved}`);
+                const data = await res.json();
+                if (res.ok && data && data.data && !data.data.expired && data.data.status === 'active') {
+                    currentCode.textContent = saved;
+                    codeInput.value = saved;
+                    codeStatus.textContent = '可用';
+                    if (data.data.expires_at) {
+                        codeExpire.textContent = data.data.expires_at.split('T')[1].slice(0, 5);
+                    }
+                    await startSessionWatch(saved, true);
+                }
+            } catch (err) {
+                localStorage.removeItem(sessionStorageKey);
+            }
+        }
+
+        function ensureActiveCode() {
+            if (activeCode) return activeCode;
+            showToast('请先验证验证码');
+            return '';
+        }
+
+        checkBtn.onclick = () => checkCode(true);
+        clearBtn.onclick = () => {
+            activeCode = '';
+            currentCode.textContent = '------';
+            codeStatus.textContent = '未验证';
+            codeExpire.textContent = '--';
+            codeInput.value = '';
+            sessionFiles.innerHTML = '<div class="muted">暂无文件</div>';
+            stopSessionWatch();
+        };
+
+        if (createBtn) createBtn.onclick = () => createSession();
+        if (copyLinkBtn) copyLinkBtn.onclick = () => copySessionLink();
+
+        pickBtn.onclick = () => fileInput.click();
+        fileInput.onchange = () => handleFiles(fileInput.files);
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drag');
+        });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag'));
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drag');
+            if (e.dataTransfer && e.dataTransfer.files) {
+                handleFiles(e.dataTransfer.files);
+            }
+        });
+
+        function handleFiles(fileList) {
+            const code = ensureActiveCode();
+            if (!code) return;
+            Array.from(fileList).forEach(file => queueUpload(file, code));
+        }
+
+        function queueUpload(file, code) {
+            const item = document.createElement('div');
+            item.className = 'queue-item';
+            item.innerHTML = `
+                <div style="display:flex;justify-content:space-between;gap:8px;">
+                    <div>
+                        <div style="font-weight:600;">${file.name}</div>
+                        <div class="muted">${formatSize(file.size)}</div>
+                    </div>
+                    <div class="muted" id="status">准备中</div>
+                </div>
+                <div class="bar"><span></span></div>
+            `;
+            uploadQueue.prepend(item);
+            const bar = item.querySelector('.bar span');
+            const status = item.querySelector('#status');
+
+            uploadFile(file, code, (p) => {
+                bar.style.width = `${p}%`;
+                status.textContent = `上传中 ${p}%`;
+            }).then(() => {
+                bar.style.width = '100%';
+                status.textContent = '完成';
+            }).catch((err) => {
+                status.textContent = '失败';
+                status.style.color = '#fb7185';
+                console.error(err);
+            });
+        }
+
+        function uploadFile(file, code, onProgress) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                const form = new FormData();
+                form.append('file', file, file.name);
+                xhr.open('POST', `/api/v1/mini/upload?code=${encodeURIComponent(code)}`, true);
+                xhr.upload.onprogress = (e) => {
+                    if (!e.lengthComputable) return;
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    onProgress(percent);
+                };
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            resolve(JSON.parse(xhr.responseText));
+                        } catch (err) {
+                            reject(err);
+                        }
+                    } else {
+                        reject(new Error(xhr.responseText || 'Upload failed'));
+                    }
+                };
+                xhr.onerror = () => reject(new Error('Network error'));
+                xhr.send(form);
+            });
+        }
+
+        function formatSize(bytes) {
+            if (!bytes) return '0 B';
+            const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(1024));
+            return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+        }
+
+        if (codeParam) {
+            codeInput.value = codeParam;
+            checkCode(false);
+            renderQr(window.location.origin + `/mini/quick-send?code=${encodeURIComponent(codeParam)}`);
+        }
+
+        window.onload = () => {
+            restoreSessionWatch();
+        };
+    </script>
+</body>
+</html>
