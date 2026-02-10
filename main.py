@@ -419,14 +419,16 @@ async def lifespan(app: FastAPI):
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_files_session ON mini_upload_files (session_code);")
             
             # 初始化预设系统标签
-            await conn.execute("""
+            await conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS system_tags (
                     name TEXT PRIMARY KEY,
                     description TEXT NOT NULL,
                     category TEXT NOT NULL,
+                    embedding vector({detected_dim}),
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
             """)
+            await conn.execute(f"ALTER TABLE system_tags ADD COLUMN IF NOT EXISTS embedding vector({detected_dim});")
             
             # 插入预设标签（如果不存在）
             preset_tags = [
@@ -2062,9 +2064,9 @@ async def api_v1_auto_tag_item(
     
     async with request.app.state.db_pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
-            # 获取情报内容
+            # 获取情报内容和已有的向量
             await cur.execute(
-                "SELECT id, title, content, owner_user_id, visibility, group_id FROM intelligence_vault WHERE id = %s",
+                "SELECT id, title, content, embedding, owner_user_id, visibility, group_id FROM intelligence_vault WHERE id = %s",
                 (item_id,)
             )
             item = await cur.fetchone()
@@ -2073,59 +2075,57 @@ async def api_v1_auto_tag_item(
             if item["owner_user_id"] != user["id"]:
                 raise HTTPException(status_code=403, detail="No permission to tag")
             
-            # 获取所有预设系统标签
-            await cur.execute("SELECT name, description FROM system_tags ORDER BY name")
-            system_tags = await cur.fetchall()
-            
-            if not system_tags:
-                raise HTTPException(status_code=500, detail="No system tags available")
-            
-            # 准备情报文本
-            item_text = (item["title"] or "") + " " + (item["content"] or "")
-            item_text = item_text.strip()
-            
-            if not item_text:
-                raise HTTPException(status_code=400, detail="Item has no content")
-            
-            # 获取情报的embedding
-            try:
-                item_embedding = await get_embedding(item_text[:500])  # 限制长度以控制成本
-            except Exception as e:
-                logger.error(f"获取情报embedding失败: {e}")
-                raise HTTPException(status_code=500, detail="Failed to get item embedding")
-            
-            # 计算每个标签的相似度
-            tag_scores = []
-            for tag in system_tags:
-                tag_text = f"{tag['name']}: {tag['description']}"
+            # 准备情报的 embedding
+            item_embedding = item.get("embedding")
+            if item_embedding is None:
+                # 如果没有现成的向量，则临时生成（限制长度控成本）
+                item_text = (item["title"] or "") + " " + (item["content"] or "")
+                item_text = item_text.strip()
+                if not item_text:
+                    raise HTTPException(status_code=400, detail="Item has no content")
                 try:
-                    tag_embedding = await get_embedding(tag_text)
-                    # 计算余弦相似度
-                    import numpy as np
-                    similarity = np.dot(item_embedding, tag_embedding) / (
-                        np.linalg.norm(item_embedding) * np.linalg.norm(tag_embedding)
-                    )
-                    tag_scores.append({
-                        'name': tag['name'],
-                        'score': float(similarity)
-                    })
+                    item_embedding = await get_embedding(item_text[:500])
                 except Exception as e:
-                    logger.warning(f"计算标签 {tag['name']} 相似度失败: {e}")
-                    continue
+                    logger.error(f"获取情报embedding失败: {e}")
+                    raise HTTPException(status_code=500, detail="Failed to get item embedding")
             
-            # 按相似度排序，筛选超过阈值的标签
-            tag_scores.sort(key=lambda x: x['score'], reverse=True)
+            # 直接在数据库中通过向量相似度检索最匹配的系统标签
+            # 1 - (embedding <=> item_embedding) 即为余弦相似度
+            await cur.execute(
+                """
+                SELECT name, (1 - (embedding <=> %s)) AS similarity
+                FROM system_tags
+                WHERE embedding IS NOT NULL
+                ORDER BY similarity DESC
+                LIMIT 10
+                """,
+                (item_embedding,)
+            )
+            tag_results = await cur.fetchall()
+            
+            if not tag_results:
+                # 兜底：如果数据库里没向量，尝试走老路或返回空
+                logger.warning("数据库中没有已向量化的系统标签，请运行 tools/vectorize_tags.py")
+                return {"status": "success", "data": {"suggested_tags": [], "all_scores": []}}
+
+            # 筛选超过阈值的标签
             suggested_tags = [
-                t for t in tag_scores[:max_tags] if t['score'] >= threshold
+                {'name': t['name'], 'score': float(t['similarity'])} 
+                for t in tag_results[:max_tags] if t['similarity'] >= threshold
             ]
             
-            logger.info(f"为情报 #{item_id} 生成 {len(suggested_tags)} 个建议标签")
+            all_scores = [
+                {'name': t['name'], 'score': float(t['similarity'])} 
+                for t in tag_results
+            ]
+            
+            logger.info(f"为情报 #{item_id} 生成 {len(suggested_tags)} 个建议标签 (基于数据库向量)")
             
             return {
                 "status": "success",
                 "data": {
                     "suggested_tags": suggested_tags,
-                    "all_scores": tag_scores[:10]  # 返回前10个供参考
+                    "all_scores": all_scores
                 }
             }
 
