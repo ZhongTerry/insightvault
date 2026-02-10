@@ -128,6 +128,12 @@
             padding: 8px 0; border-bottom: 1px solid var(--line);
         }
         .tag-list-item:last-child { border-bottom: none; }
+        .suggested-tag-item:hover {
+            border-color: var(--primary) !important;
+            background: #f0f7f6 !important;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(14, 124, 123, 0.1);
+        }
 
         @media (max-width: 700px) {
             .nav { flex-direction: column; align-items: flex-start; }
@@ -237,6 +243,24 @@
         </div>
     </div>
 
+    <!-- Auto Tag Modal -->
+    <div id="autoTagModal" class="modal-overlay" style="display: none; z-index: 1001;">
+        <div class="modal-card" style="max-width: 500px;">
+            <h3>🏷️ 智能标签建议</h3>
+            <div id="autoTagLoadingMsg" style="margin: 16px 0; text-align: center; color: var(--muted);">
+                正在分析情报内容，生成标签建议...
+            </div>
+            <div id="autoTagResultsContainer" style="display: none;">
+                <p class="muted" style="margin-bottom: 12px;">根据内容分析，建议添加以下标签：</p>
+                <div id="suggestedTagsList" style="margin-bottom: 16px;"></div>
+                <div class="row" style="justify-content: flex-end; margin-top: 12px;">
+                    <button class="btn-ghost" onclick="closeAutoTagModal()">取消</button>
+                    <button class="btn-primary" onclick="applySelectedTags()">应用选中标签</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         let currentPage = 1;
         let currentType = 'all';
@@ -247,6 +271,8 @@
         let currentUser = null;
         let currentGroups = [];
         let currentTemplate = 'none';
+        let currentAutoTagItemId = null;
+        let currentSuggestedTags = [];
 
         // 模板配置
         const templates = {
@@ -523,7 +549,10 @@
                             ${statusStr}
                             ${archivedBadge}
                         </div>
-                        <div style="display: flex; align-items: center; gap: 8px;">
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <button class="btn-ghost btn-small auto-tag-btn" data-item-id="${item.id}" style="font-size: 11px; padding: 4px 8px;">
+                                🏷️ 自动打标签
+                            </button>
                             <span class="vis-pill"></span>
                             <span class="tags-container"></span>
                         </div>
@@ -551,6 +580,15 @@
                     ts.textContent = '#' + t;
                     tagsContainer.appendChild(ts);
                 });
+                
+                // 为自动打标签按钮添加事件监听器
+                const autoTagBtn = itemEl.querySelector('.auto-tag-btn');
+                if (autoTagBtn) {
+                    autoTagBtn.onclick = (e) => {
+                        e.stopPropagation(); // 阻止触发item的点击事件
+                        autoTagItem(item.id);
+                    };
+                }
                 
                 container.appendChild(itemEl);
             });
@@ -689,6 +727,129 @@
             if (res && res.status === 'success') {
                 await loadTagsList();
                 render(currentType, currentQuery, currentPage);
+            }
+        }
+
+        // 自动打标签相关函数
+        async function autoTagItem(itemId) {
+            currentAutoTagItemId = itemId;
+            currentSuggestedTags = [];
+            
+            // 打开模态框，显示加载状态
+            document.getElementById('autoTagModal').style.display = 'flex';
+            document.getElementById('autoTagLoadingMsg').style.display = 'block';
+            document.getElementById('autoTagResultsContainer').style.display = 'none';
+            
+            try {
+                // 调用API获取标签建议
+                const res = await apiCall(`/api/v1/items/${itemId}/auto-tag`, 'POST', {
+                    threshold: 0.25,  // 降低阈值以获得更多建议
+                    max_tags: 5
+                });
+                
+                if (res && res.status === 'success') {
+                    currentSuggestedTags = res.data.suggested_tags || [];
+                    displaySuggestedTags();
+                } else {
+                    closeAutoTagModal();
+                    showToast('生成标签建议失败 ❌');
+                }
+            } catch (error) {
+                console.error('Auto-tag error:', error);
+                closeAutoTagModal();
+                showToast('生成标签建议失败 ❌');
+            }
+        }
+
+        function displaySuggestedTags() {
+            const container = document.getElementById('suggestedTagsList');
+            container.innerHTML = '';
+            
+            if (currentSuggestedTags.length === 0) {
+                container.innerHTML = '<div class="muted">未找到合适的标签建议。建议内容可能过于模糊或无法归类。</div>';
+            } else {
+                currentSuggestedTags.forEach((tag, index) => {
+                    const tagDiv = document.createElement('div');
+                    tagDiv.className = 'suggested-tag-item';
+                    tagDiv.style.cssText = 'display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; background: white; cursor: pointer; transition: all 0.2s;';
+                    tagDiv.onclick = () => {
+                        const cb = document.getElementById(`tag-check-${index}`);
+                        if (cb) cb.checked = !cb.checked;
+                    };
+                    
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = `tag-check-${index}`;
+                    checkbox.checked = true;
+                    checkbox.style.width = '18px';
+                    checkbox.style.height = '18px';
+                    checkbox.style.margin = '0';
+                    checkbox.onclick = (e) => e.stopPropagation();
+                    
+                    const label = document.createElement('label');
+                    label.htmlFor = `tag-check-${index}`;
+                    label.style.cssText = 'flex: 1; cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin: 0; min-width: 0;';
+                    label.onclick = (e) => e.stopPropagation();
+                    
+                    const tagName = document.createElement('span');
+                    tagName.textContent = `#${tag.name}`;
+                    tagName.style.cssText = 'font-weight: 600; color: var(--primary); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
+                    
+                    const scoreSpan = document.createElement('span');
+                    scoreSpan.textContent = `匹配度: ${(tag.score * 100).toFixed(1)}%`;
+                    scoreSpan.className = 'muted';
+                    scoreSpan.style.cssText = 'font-size: 11px; white-space: nowrap; margin-left: 8px; flex-shrink: 0;';
+                    
+                    label.appendChild(tagName);
+                    label.appendChild(scoreSpan);
+                    tagDiv.appendChild(checkbox);
+                    tagDiv.appendChild(label);
+                    container.appendChild(tagDiv);
+                });
+            }
+            
+            document.getElementById('autoTagLoadingMsg').style.display = 'none';
+            document.getElementById('autoTagResultsContainer').style.display = 'block';
+        }
+
+        function closeAutoTagModal() {
+            document.getElementById('autoTagModal').style.display = 'none';
+            currentAutoTagItemId = null;
+            currentSuggestedTags = [];
+        }
+
+        async function applySelectedTags() {
+            if (!currentAutoTagItemId) return;
+            
+            // 获取选中的标签
+            const selectedTags = [];
+            currentSuggestedTags.forEach((tag, index) => {
+                const checkbox = document.getElementById(`tag-check-${index}`);
+                if (checkbox && checkbox.checked) {
+                    selectedTags.push(tag.name);
+                }
+            });
+            
+            if (selectedTags.length === 0) {
+                showToast('请至少选择一个标签');
+                return;
+            }
+            
+            try {
+                const res = await apiCall(`/api/v1/items/${currentAutoTagItemId}/apply-tags`, 'POST', {
+                    tags: selectedTags
+                });
+                
+                if (res && res.status === 'success') {
+                    showToast(`✨ 已应用 ${selectedTags.length} 个标签`);
+                    closeAutoTagModal();
+                    render(currentType, currentQuery, currentPage);  // 刷新列表
+                } else {
+                    showToast('应用标签失败 ❌');
+                }
+            } catch (error) {
+                console.error('Apply tags error:', error);
+                showToast('应用标签失败 ❌');
             }
         }
 

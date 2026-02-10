@@ -418,6 +418,78 @@ async def lifespan(app: FastAPI):
             """)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_mini_files_session ON mini_upload_files (session_code);")
             
+            # 初始化预设系统标签
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS system_tags (
+                    name TEXT PRIMARY KEY,
+                    description TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # 插入预设标签（如果不存在）
+            preset_tags = [
+                # 技术类
+                ('编程', '软件开发、编程语言、算法数据结构等', '技术'),
+                ('前端开发', '前端技术、HTML、CSS、JavaScript、React、Vue等', '技术'),
+                ('后端开发', '后端技术、API、服务器、数据库交互等', '技术'),
+                ('数据库', '数据库设计、SQL、NoSQL等', '技术'),
+                ('人工智能', 'AI、机器学习、深度学习、神经网络等', '技术'),
+                ('网络安全', '安全防护、加密、漏洞、渗透测试等', '技术'),
+                ('运维DevOps', '部署、CI/CD、容器、云服务等', '技术'),
+                ('移动开发', 'iOS、Android、跨平台应用开发等', '技术'),
+                
+                # 学术类
+                ('数学', '数学理论、公式、数学问题等', '学术'),
+                ('物理学', '物理原理、实验、理论物理等', '学术'),
+                ('化学', '化学反应、分子结构、化学实验等', '学术'),
+                ('生物学', '生物学知识、生态、遗传等', '学术'),
+                ('历史', '历史事件、人物、文化变迁等', '学术'),
+                ('哲学', '哲学思想、逻辑、伦理学等', '学术'),
+                ('经济学', '经济理论、市场、金融等', '学术'),
+                ('心理学', '心理现象、认知、行为等', '学术'),
+                ('信息竞赛', '算法竞赛、编程竞赛、数学建模等', '学术'),
+                ('灵感启发', '提供灵感、创意触发、思维导图等', '学术'),
+                
+                # 工作类
+                ('项目管理', '项目规划、执行、团队协作等', '工作'),
+                ('产品设计', '产品策划、需求分析、用户体验等', '工作'),
+                ('商业策略', '商业模式、市场策略、竞争分析等', '工作'),
+                ('职业发展', '职业规划、技能提升、面试等', '工作'),
+                ('团队协作', '沟通、协作工具、团队建设等', '工作'),
+                ('服务器管理', '服务器配置、维护、性能优化等', '工作'),
+                ('资源/设备管理', '资源分配、设备维护、库存管理等', '工作'),
+                
+                # 创意类
+                ('设计', '视觉设计、UI/UX、平面设计等', '创意'),
+                ('写作', '文案、创作、文学等', '创意'),
+                ('摄影', '摄影技巧、后期处理、构图等', '创意'),
+                ('艺术', '绘画、雕塑、艺术理论等', '创意'),
+                ('小说', '小说创作、故事构建、角色设定等', '创意'),
+                ('作文素材', '作文写作素材、范文、写作技巧等', '创意'),
+                
+                # 生活类
+                ('健康养生', '健康知识、运动、饮食等', '生活'),
+                ('美食烹饪', '菜谱、烹饪技巧、美食推荐等', '生活'),
+                ('旅行', '旅游攻略、景点、旅行体验等', '生活'),
+                ('理财投资', '理财知识、投资策略、财务规划等', '生活'),
+                
+                # 其他
+                ('教育学习', '学习方法、教育资源、知识分享等', '其他'),
+                ('新闻时事', '新闻报道、时事评论、社会热点等', '其他'),
+                ('娱乐', '影视、音乐、游戏、综艺等', '其他'),
+            ]
+            
+            for tag_name, description, category in preset_tags:
+                await conn.execute("""
+                    INSERT INTO system_tags (name, description, category)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (name) DO NOTHING
+                """, (tag_name, description, category))
+            
+            logger.info(f"预设系统标签初始化完成，共 {len(preset_tags)} 个标签")
+            
             logger.info("数据库环境检查完成")
 
             # Bootstrap admin if configured
@@ -1976,6 +2048,160 @@ async def api_v1_delete_item(
             await cur.execute("DELETE FROM intelligence_vault WHERE id = %s", (item_id,))
     
     return {"status": "success"}
+
+@app.post("/api/v1/items/{item_id}/auto-tag")
+async def api_v1_auto_tag_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """使用Embedding自动为情报打标签"""
+    threshold = data.get('threshold', 0.3)  # 相似度阈值
+    max_tags = data.get('max_tags', 3)  # 最多返回的标签数
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            # 获取情报内容
+            await cur.execute(
+                "SELECT id, title, content, owner_user_id, visibility, group_id FROM intelligence_vault WHERE id = %s",
+                (item_id,)
+            )
+            item = await cur.fetchone()
+            if not item:
+                raise HTTPException(status_code=404, detail="Item not found")
+            if item["owner_user_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="No permission to tag")
+            
+            # 获取所有预设系统标签
+            await cur.execute("SELECT name, description FROM system_tags ORDER BY name")
+            system_tags = await cur.fetchall()
+            
+            if not system_tags:
+                raise HTTPException(status_code=500, detail="No system tags available")
+            
+            # 准备情报文本
+            item_text = (item["title"] or "") + " " + (item["content"] or "")
+            item_text = item_text.strip()
+            
+            if not item_text:
+                raise HTTPException(status_code=400, detail="Item has no content")
+            
+            # 获取情报的embedding
+            try:
+                item_embedding = await get_embedding(item_text[:500])  # 限制长度以控制成本
+            except Exception as e:
+                logger.error(f"获取情报embedding失败: {e}")
+                raise HTTPException(status_code=500, detail="Failed to get item embedding")
+            
+            # 计算每个标签的相似度
+            tag_scores = []
+            for tag in system_tags:
+                tag_text = f"{tag['name']}: {tag['description']}"
+                try:
+                    tag_embedding = await get_embedding(tag_text)
+                    # 计算余弦相似度
+                    import numpy as np
+                    similarity = np.dot(item_embedding, tag_embedding) / (
+                        np.linalg.norm(item_embedding) * np.linalg.norm(tag_embedding)
+                    )
+                    tag_scores.append({
+                        'name': tag['name'],
+                        'score': float(similarity)
+                    })
+                except Exception as e:
+                    logger.warning(f"计算标签 {tag['name']} 相似度失败: {e}")
+                    continue
+            
+            # 按相似度排序，筛选超过阈值的标签
+            tag_scores.sort(key=lambda x: x['score'], reverse=True)
+            suggested_tags = [
+                t for t in tag_scores[:max_tags] if t['score'] >= threshold
+            ]
+            
+            logger.info(f"为情报 #{item_id} 生成 {len(suggested_tags)} 个建议标签")
+            
+            return {
+                "status": "success",
+                "data": {
+                    "suggested_tags": suggested_tags,
+                    "all_scores": tag_scores[:10]  # 返回前10个供参考
+                }
+            }
+
+@app.post("/api/v1/items/{item_id}/apply-tags")
+async def api_v1_apply_tags_to_item(
+    request: Request,
+    item_id: int,
+    data: dict,
+    user: dict = Depends(require_scope('write'))
+):
+    """应用标签到情报（支持系统标签自动创建为用户标签）"""
+    tag_names = data.get('tags', [])
+    if not tag_names:
+        raise HTTPException(status_code=400, detail="No tags provided")
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            # 验证权限
+            await cur.execute(
+                "SELECT id, owner_user_id, visibility, group_id FROM intelligence_vault WHERE id = %s",
+                (item_id,)
+            )
+            item = await cur.fetchone()
+            if not item:
+                raise HTTPException(status_code=404, detail="Item not found")
+            if item["owner_user_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="No permission to tag")
+            
+            # 为每个标签创建用户标签（如果不存在）
+            visibility = item["visibility"]
+            group_id = item["group_id"]
+            
+            for tag_name in tag_names:
+                tag_name = tag_name.strip()
+                if not tag_name:
+                    continue
+                
+                # 检查标签是否存在
+                if visibility == 'private':
+                    await cur.execute(
+                        "SELECT id FROM tags WHERE name = %s AND owner_user_id = %s AND visibility = 'private'",
+                        (tag_name, user["id"])
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT id FROM tags WHERE name = %s AND group_id = %s AND visibility = 'group'",
+                        (tag_name, group_id)
+                    )
+                
+                existing_tag = await cur.fetchone()
+                
+                if not existing_tag:
+                    # 创建新标签
+                    if visibility == 'private':
+                        await cur.execute(
+                            "INSERT INTO tags (name, owner_user_id, visibility) VALUES (%s, %s, 'private') RETURNING id",
+                            (tag_name, user["id"])
+                        )
+                    else:
+                        await cur.execute(
+                            "INSERT INTO tags (name, group_id, visibility, owner_user_id) VALUES (%s, %s, 'group', %s) RETURNING id",
+                            (tag_name, group_id, user["id"])
+                        )
+                    tag_id = (await cur.fetchone())["id"]
+                else:
+                    tag_id = existing_tag["id"]
+                
+                # 关联标签到情报
+                await cur.execute(
+                    "INSERT INTO item_tags (item_id, tag_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+                    (item_id, tag_id)
+                )
+            
+            logger.info(f"为情报 #{item_id} 应用了 {len(tag_names)} 个标签")
+            
+            return {"status": "success"}
 
 @app.patch("/api/v1/items/{item_id}/status")
 async def api_v1_update_item_status(
