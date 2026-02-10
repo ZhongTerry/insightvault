@@ -38,6 +38,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger("InsightVault")
 
+# 导入新的多模态和存储模块
+try:
+    from multimodal_parser import create_parser, ParseResult
+    HAS_MULTIMODAL = True
+    logger.info("✓ 多模态解析模块已加载")
+except ImportError as e:
+    HAS_MULTIMODAL = False
+    logger.warning(f"✗ 多模态解析模块未加载: {e}")
+
+try:
+    from storage_optimizer import create_storage_optimizer, ProvenanceManager
+    HAS_STORAGE_OPT = True
+    logger.info("✓ 存储优化模块已加载")
+except ImportError as e:
+    HAS_STORAGE_OPT = False
+    logger.warning(f"✗ 存储优化模块未加载: {e}")
+
+# 解决 Windows 下 Psycopg 异步连接池与默认事件循环 (ProactorEventLoop) 的兼容性问题
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import httpx
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException, Query, Depends, UploadFile, File, Form
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from psycopg_pool import AsyncConnectionPool
+from psycopg.rows import dict_row
+from dotenv import load_dotenv
+
+# --- 1. 配置与日志模块 ---
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger("InsightVault")
+
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 ACCESS_TOKEN_TTL_SECONDS = 60 * 60 * 24
 PASSWORD_ITERATIONS = 120_000
@@ -507,6 +546,19 @@ async def lifespan(app: FastAPI):
                             (bootstrap_email, "Admin", pw["hash"], pw["salt"])
                         )
                         logger.info("已创建引导管理员账号")
+        
+        # 初始化存储优化器并创建必要的字段
+        if HAS_STORAGE_OPT:
+            storage_opt = create_storage_optimizer(app.state.db_pool)
+            await storage_opt.add_metadata_column_if_not_exists()
+            app.state.storage_optimizer = storage_opt
+            logger.info("✓ 存储优化器已初始化")
+        
+        # 初始化多模态解析器
+        if HAS_MULTIMODAL:
+            app.state.multimodal_parser = create_parser()
+            logger.info("✓ 多模态解析器已初始化")
+        
     except Exception as e:
         logger.error(f"生命周期启动失败: {e}")
         raise e
@@ -546,6 +598,25 @@ async def get_embedding(text: str):
         _embedding_cache.pop(next(iter(_embedding_cache)))
     _embedding_cache[text] = vec
     return vec
+
+async def chat_with_ai(messages: list, model: Optional[str] = None, temperature: float = 0.2, max_tokens: int = 800) -> str:
+    base_url = os.getenv("AI_BASE_URL", "").rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=500, detail="AI_BASE_URL not configured")
+    model = (model or os.getenv("RAG_MODEL") or os.getenv("CHAT_MODEL") or "gpt-4o-mini").strip()
+    endpoint = f"{base_url}/chat/completions"
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "top_p": 1
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post(endpoint, json=payload, headers={"Authorization": f"Bearer {os.getenv('AI_API_KEY')}"}, timeout=60.0)
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
 
 async def get_current_user(request: Request) -> dict:
     auth = request.headers.get("Authorization", "")
@@ -798,6 +869,142 @@ def save_upload_stream(upload: UploadFile, dest_path: str) -> dict:
 def ensure_within_storage(path: str) -> bool:
     real_path = os.path.realpath(path)
     return real_path.startswith(CLOUD_STORAGE_DIR)
+
+async def process_file_with_multimodal(
+    app_state,
+    item_id: int,
+    file_path: str,
+    mime_type: str,
+    user_id: int,
+    original_filename: str,
+    vault_item_id: Optional[int] = None
+):
+    """
+    后台任务：使用多模态解析器处理文件
+    提取文本内容、元数据并存储溯源信息
+    """
+    if not HAS_MULTIMODAL or not HAS_STORAGE_OPT:
+        logger.warning(f"跳过文件 {item_id} 的多模态解析（模块未加载）")
+        return
+    
+    try:
+        logger.info(f"开始多模态解析文件 {item_id}: {original_filename}")
+        
+        # 解析文件
+        # 如果是图片，优先使用与云盘 OCR 相同的 AI 识别逻辑
+        if mime_type and mime_type.startswith("image/"):
+            logger.info(f"使用 AI Vision OCR 处理图片: {original_filename}")
+            try:
+                with open(file_path, "rb") as f:
+                    img_data = f.read()
+                    img_b64 = base64.b64encode(img_data).decode('utf-8')
+                
+                ocr_text = await ocr_with_ai(img_b64)
+                result = ParseResult(
+                    success=True, 
+                    content=ocr_text, 
+                    metadata={"ocr_method": "ai_vision", "mime_type": mime_type},
+                    images=[{"data": img_b64}]
+                )
+            except Exception as e:
+                logger.error(f"AI OCR 失败，回退到普通多模态解析: {e}")
+                parser = app_state.multimodal_parser
+                result: ParseResult = parser.parse_file(file_path, mime_type)
+        else:
+            parser = app_state.multimodal_parser
+            result: ParseResult = parser.parse_file(file_path, mime_type)
+        
+        if not result.success:
+            logger.error(f"文件 {item_id} 解析失败: {result.error}")
+            if vault_item_id:
+                async with app_state.db_pool.connection() as conn:
+                    await conn.execute(
+                        "UPDATE intelligence_vault SET vectorization_status = 'failed', content = %s WHERE id = %s",
+                        (f"解析失败: {result.error}", vault_item_id)
+                    )
+            return
+        
+        # 创建溯源记录
+        provenance = ProvenanceManager.create_provenance(
+            source_type='upload',
+            source_file=file_path,
+            original_filename=original_filename,
+            importer=str(user_id),
+            checksum=None,  # 已在上传时计算
+            metadata={'mime_type': mime_type}
+        )
+        
+        # 存储解析结果
+        storage_opt = app_state.storage_optimizer
+        await storage_opt.store_file_metadata(
+            item_id=item_id,
+            extracted_content=result.content,
+            metadata=result.metadata,
+            provenance=provenance
+        )
+        
+        logger.info(f"✓ 文件 {item_id} 多模态解析完成，提取了 {len(result.content)} 字符")
+        
+        # 生成标题（从元数据或文件名）
+        title = result.metadata.get('title') or result.metadata.get('subject') or original_filename
+        
+        if vault_item_id:
+            # 更新已存在的占位条目
+            try:
+                embedding = None
+                content_to_save = result.content if result.content else "(无文本内容)"
+                
+                # 只有当内容足够时才进行向量化
+                if result.content and len(result.content.strip()) > 10:
+                    embedding = await get_embedding(result.content[:2000])
+                
+                async with app_state.db_pool.connection() as conn:
+                    await conn.execute(
+                        """
+                        UPDATE intelligence_vault 
+                        SET title = %s, content = %s, embedding = %s, 
+                            vectorization_status = %s, provenance = %s
+                        WHERE id = %s
+                        """,
+                        (title, content_to_save, embedding, 
+                         'success' if embedding else 'pending', 
+                         json.dumps(provenance), vault_item_id)
+                    )
+                logger.info(f"✓ 更新情报条目 {vault_item_id}")
+            except Exception as e:
+                logger.warning(f"更新情报条目失败: {e}")
+                async with app_state.db_pool.connection() as conn:
+                    await conn.execute(
+                        "UPDATE intelligence_vault SET vectorization_status = 'failed' WHERE id = %s",
+                        (vault_item_id,)
+                    )
+        
+        # 旧逻辑：如果没有预先创建 ID 且内容足够，则新建
+        elif result.content and len(result.content.strip()) > 50:
+            try:
+                embedding = await get_embedding(result.content[:2000])  # 前2000字符用于向量化
+                
+                async with app_state.db_pool.connection() as conn:
+                    await conn.execute(
+                        """
+                        INSERT INTO intelligence_vault 
+                        (title, content, embedding, owner_user_id, visibility, vectorization_status, provenance, source_file_id)
+                        VALUES (%s, %s, %s, %s, 'private', 'success', %s, %s)
+                        """,
+                        (title, result.content, embedding, user_id, json.dumps(provenance), item_id)
+                    )
+                logger.info(f"✓ 自动创建情报条目：{title}")
+            except Exception as e:
+                logger.warning(f"自动创建情报条目失败: {e}")
+        
+    except Exception as e:
+        logger.error(f"多模态处理任务失败 (文件 {item_id}): {e}", exc_info=True)
+        if vault_item_id:
+             async with app_state.db_pool.connection() as conn:
+                await conn.execute(
+                    "UPDATE intelligence_vault SET vectorization_status = 'failed' WHERE id = %s",
+                    (vault_item_id,)
+                )
 
 async def ocr_with_ai(image_b64: str) -> str:
     base_url = os.getenv("AI_BASE_URL", "").rstrip("/")
@@ -1751,7 +1958,7 @@ async def api_v1_list_items(
         results = []
         
         query_vec = None
-        if type == 'ai' and q:
+        if type in ('ai', 'hybrid') and q:
             query_vec = await get_embedding(q)
         
         async with request.app.state.db_pool.connection() as conn:
@@ -1759,6 +1966,7 @@ async def api_v1_list_items(
                 access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
                 archive_sql = "" if show_archived else " AND iv.is_archived = FALSE"
                 favorite_sql = " AND iv.is_favorited = TRUE" if favorited_only else ""
+                has_more = False
                 
                 if type == 'ai' and query_vec:
                     await cur.execute("""
@@ -1766,6 +1974,7 @@ async def api_v1_list_items(
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
                                iv.vectorization_status, iv.is_archived, iv.is_favorited,
+                               iv.source_file_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1779,12 +1988,96 @@ async def api_v1_list_items(
                         WHERE """ + access_sql + archive_sql + favorite_sql + """
                         ORDER BY score DESC LIMIT %s OFFSET %s
                     """, (json.dumps(query_vec), user["id"], list(group_roles.keys()), per_page, offset))
+                    rows = await cur.fetchall()
+                    results = [dict(row) for row in rows]
+                    has_more = len(results) == per_page
+                elif type == 'hybrid' and q and query_vec:
+                    fetch_limit = max(per_page * 3, (page * per_page) + 5)
+                    
+                    await cur.execute("""
+                        SELECT iv.id, iv.title,
+                               LEFT(iv.content, 200) as content_preview,
+                               iv.created_at, iv.visibility, iv.group_id,
+                               iv.vectorization_status, iv.is_archived, iv.is_favorited,
+                               iv.source_file_id,
+                               g.name AS group_name,
+                               ARRAY(
+                                   SELECT t.name FROM item_tags it
+                                   JOIN tags t ON t.id = it.tag_id
+                                   WHERE it.item_id = iv.id
+                                   ORDER BY t.name
+                               ) AS tags,
+                               1 - (iv.embedding <=> %s::vector) AS score,
+                               0.0 AS keyword_score
+                        FROM intelligence_vault iv
+                        LEFT JOIN groups g ON g.id = iv.group_id
+                        WHERE iv.embedding IS NOT NULL AND """ + access_sql + archive_sql + favorite_sql + """
+                        ORDER BY score DESC LIMIT %s
+                    """, (json.dumps(query_vec), user["id"], list(group_roles.keys()), fetch_limit))
+                    vec_rows = await cur.fetchall()
+                    
+                    keyword_like = f"%{q}%"
+                    await cur.execute("""
+                        SELECT iv.id, iv.title,
+                               LEFT(iv.content, 200) as content_preview,
+                               iv.created_at, iv.visibility, iv.group_id,
+                               iv.vectorization_status, iv.is_archived, iv.is_favorited,
+                               iv.source_file_id,
+                               g.name AS group_name,
+                               ARRAY(
+                                   SELECT t.name FROM item_tags it
+                                   JOIN tags t ON t.id = it.tag_id
+                                   WHERE it.item_id = iv.id
+                                   ORDER BY t.name
+                               ) AS tags,
+                               0.0 AS score,
+                               CASE
+                                   WHEN iv.title ILIKE %s THEN 1.0
+                                   WHEN iv.content ILIKE %s THEN 0.5
+                                   ELSE 0.0
+                               END AS keyword_score
+                        FROM intelligence_vault iv
+                        LEFT JOIN groups g ON g.id = iv.group_id
+                        WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + archive_sql + favorite_sql + """
+                        ORDER BY keyword_score DESC, iv.created_at DESC LIMIT %s
+                    """, (keyword_like, keyword_like, keyword_like, keyword_like, user["id"], list(group_roles.keys()), fetch_limit))
+                    key_rows = await cur.fetchall()
+                    
+                    combined = {}
+                    def upsert(row):
+                        row_dict = dict(row)
+                        item_id = row_dict["id"]
+                        existing = combined.get(item_id)
+                        vector_score = float(row_dict.get("score") or 0.0)
+                        keyword_score = float(row_dict.get("keyword_score") or 0.0)
+                        if not existing:
+                            row_dict["_vector_score"] = vector_score
+                            row_dict["_keyword_score"] = keyword_score
+                            combined[item_id] = row_dict
+                        else:
+                            existing["_vector_score"] = max(existing.get("_vector_score", 0.0), vector_score)
+                            existing["_keyword_score"] = max(existing.get("_keyword_score", 0.0), keyword_score)
+                    
+                    for row in vec_rows:
+                        upsert(row)
+                    for row in key_rows:
+                        upsert(row)
+                    
+                    merged = list(combined.values())
+                    for row in merged:
+                        vector_score = row.pop("_vector_score", 0.0)
+                        keyword_score = row.pop("_keyword_score", 0.0)
+                        row["score"] = (vector_score * 0.75) + (keyword_score * 0.25)
+                    merged.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                    results = merged[offset:offset + per_page]
+                    has_more = len(merged) > (offset + per_page)
                 elif type == 'key' and q:
                     await cur.execute("""
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
                                iv.vectorization_status, iv.is_archived, iv.is_favorited,
+                               iv.source_file_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1797,12 +2090,16 @@ async def api_v1_list_items(
                         WHERE (iv.content ILIKE %s OR iv.title ILIKE %s) AND """ + access_sql + archive_sql + favorite_sql + """
                         ORDER BY iv.is_favorited DESC, iv.created_at DESC LIMIT %s OFFSET %s
                     """, (f'%{q}%', f'%{q}%', user["id"], list(group_roles.keys()), per_page, offset))
+                    rows = await cur.fetchall()
+                    results = [dict(row) for row in rows]
+                    has_more = len(results) == per_page
                 else:
                     await cur.execute("""
                         SELECT iv.id, iv.title,
                                LEFT(iv.content, 200) as content_preview,
                                iv.created_at, iv.visibility, iv.group_id,
                                iv.vectorization_status, iv.is_archived, iv.is_favorited,
+                               iv.source_file_id,
                                g.name AS group_name,
                                ARRAY(
                                    SELECT t.name FROM item_tags it
@@ -1815,9 +2112,9 @@ async def api_v1_list_items(
                         WHERE """ + access_sql + archive_sql + favorite_sql + """
                         ORDER BY iv.is_favorited DESC, iv.created_at DESC LIMIT %s OFFSET %s
                     """, (user["id"], list(group_roles.keys()), per_page, offset))
-                
-                rows = await cur.fetchall()
-                results = [dict(row) for row in rows]
+                    rows = await cur.fetchall()
+                    results = [dict(row) for row in rows]
+                    has_more = len(results) == per_page
         
         for r in results:
             if isinstance(r['created_at'], datetime):
@@ -1830,7 +2127,115 @@ async def api_v1_list_items(
         "pagination": {
             "page": page,
             "per_page": per_page,
-            "has_more": len(results) == per_page
+            "has_more": has_more
+        }
+    }
+
+@app.post("/api/v1/chat")
+async def api_v1_chat_with_data(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    """基于库内情报的RAG对话"""
+    query = (data.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    
+    top_k = int(data.get("top_k", 6))
+    top_k = max(1, min(top_k, 12))
+    tags = data.get("tags") or []
+    include_archived = bool(data.get("include_archived", False))
+    favorited_only = bool(data.get("favorited_only", False))
+    start_date = data.get("start_date")
+    end_date = data.get("end_date")
+    
+    def parse_date(date_str: Optional[str]) -> Optional[datetime]:
+        if not date_str:
+            return None
+        try:
+            return datetime.fromisoformat(date_str)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date format: {date_str}")
+    
+    start_dt = parse_date(start_date)
+    end_dt = parse_date(end_date)
+    if start_dt and end_dt and start_dt > end_dt:
+        raise HTTPException(status_code=400, detail="start_date must be <= end_date")
+    
+    query_vec = await get_embedding(query)
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+    archive_sql = "" if include_archived else " AND iv.is_archived = FALSE"
+    favorite_sql = " AND iv.is_favorited = TRUE" if favorited_only else ""
+    date_sql = ""
+    params = [json.dumps(query_vec), user["id"], list(group_roles.keys())]
+    
+    if start_dt:
+        date_sql += " AND iv.created_at >= %s"
+        params.append(start_dt)
+    if end_dt:
+        date_sql += " AND iv.created_at <= %s"
+        params.append(end_dt)
+    
+    tag_sql = ""
+    if tags:
+        tag_sql = " AND EXISTS (SELECT 1 FROM item_tags it JOIN tags t ON t.id = it.tag_id WHERE it.item_id = iv.id AND t.name = ANY(%s))"
+        params.append(tags)
+    
+    params.append(top_k)
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"""
+                SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
+                       g.name AS group_name,
+                       1 - (iv.embedding <=> %s::vector) AS score
+                FROM intelligence_vault iv
+                LEFT JOIN groups g ON g.id = iv.group_id
+                WHERE iv.embedding IS NOT NULL AND {access_sql}{archive_sql}{favorite_sql}{date_sql}{tag_sql}
+                ORDER BY score DESC
+                LIMIT %s
+            """, tuple(params))
+            rows = await cur.fetchall()
+            sources = [dict(row) for row in rows]
+    
+    context_blocks = []
+    for row in sources:
+        title = row.get("title") or "无标题"
+        created_at = row.get("created_at")
+        created_str = created_at.isoformat() if isinstance(created_at, datetime) else str(created_at)
+        content = (row.get("content") or "").strip()
+        if len(content) > 1200:
+            content = content[:1200] + "..."
+        context_blocks.append(
+            f"[ID:{row['id']}] 标题: {title}\n时间: {created_str}\n内容: {content}"
+        )
+    
+    system_prompt = (
+        "你是 InsightVault 的情报助手。仅使用提供的上下文回答问题。"
+        "如果上下文不足以回答，直接说明无法从现有情报得出结论。"
+        "回答中请引用相关来源的 [ID]。"
+    )
+    user_prompt = "\n\n".join([
+        f"用户问题: {query}",
+        "\n".join(context_blocks) if context_blocks else "(无可用上下文)"
+    ])
+    
+    answer = await chat_with_ai([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ])
+    
+    for row in sources:
+        if isinstance(row.get("created_at"), datetime):
+            row["created_at"] = row["created_at"].isoformat()
+    
+    return {
+        "status": "success",
+        "data": {
+            "answer": answer,
+            "sources": sources
         }
     }
 
@@ -1846,17 +2251,21 @@ async def api_v1_get_item(
             await cur.execute("""
                 SELECT iv.id, iv.title, iv.content, iv.created_at, iv.visibility, iv.group_id,
                        iv.vectorization_status, iv.is_archived, iv.is_favorited,
-                       iv.owner_user_id, u.name as owner_name,
+                       iv.owner_user_id, iv.source_file_id, u.name as owner_name,
                        g.name AS group_name,
                        ARRAY(
                            SELECT t.name FROM item_tags it
                            JOIN tags t ON t.id = it.tag_id
                            WHERE it.item_id = iv.id
                            ORDER BY t.name
-                       ) AS tags
+                       ) AS tags,
+                       ci.name as source_filename,
+                       ci.mime_type as source_mime_type,
+                       ci.extracted_metadata as source_metadata
                 FROM intelligence_vault iv
                 LEFT JOIN groups g ON g.id = iv.group_id
                 LEFT JOIN users u ON u.id = iv.owner_user_id
+                LEFT JOIN cloud_items ci ON ci.id = iv.source_file_id
                 WHERE iv.id = %s
             """, (item_id,))
             item = await cur.fetchone()
@@ -1876,6 +2285,67 @@ async def api_v1_get_item(
         item_dict['created_at'] = item_dict['created_at'].isoformat()
     
     return {"status": "success", "data": item_dict}
+
+@app.get("/api/v1/items/{item_id}/related")
+async def api_v1_get_related_items(
+    request: Request,
+    item_id: int,
+    limit: int = Query(default=6, ge=1, le=20),
+    user: dict = Depends(require_scope('read'))
+):
+    """基于向量相似度获取关联推荐"""
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute("""
+                SELECT iv.id, iv.title, iv.content, iv.embedding, iv.created_at, iv.visibility, iv.group_id,
+                       iv.owner_user_id
+                FROM intelligence_vault iv
+                WHERE iv.id = %s
+            """, (item_id,))
+            item = await cur.fetchone()
+    
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    
+    item_dict = dict(item)
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    if item_dict["owner_user_id"] != user["id"]:
+        if item_dict["visibility"] != "group" or item_dict["group_id"] not in group_roles:
+            raise HTTPException(status_code=403, detail="No access to this item")
+    
+    embedding = item_dict.get("embedding")
+    if embedding is None:
+        return {"status": "success", "data": {"related": []}}
+    
+    # 纠正：如果从数据库获取的已经是字符串形式的向量 [1,2,3...]，则不再进行 json.dumps
+    if not isinstance(embedding, str):
+        embedding = json.dumps(embedding)
+    
+    access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+    related = []
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"""
+                SELECT iv.id, iv.title,
+                       LEFT(iv.content, 140) as content_preview,
+                       iv.created_at, iv.visibility, iv.group_id,
+                       g.name AS group_name,
+                       1 - (iv.embedding <=> %s::vector) AS score
+                FROM intelligence_vault iv
+                LEFT JOIN groups g ON g.id = iv.group_id
+                WHERE iv.id != %s AND iv.embedding IS NOT NULL AND {access_sql}
+                ORDER BY score DESC
+                LIMIT %s
+            """, (embedding, item_id, user["id"], list(group_roles.keys()), limit))
+            related_rows = await cur.fetchall()
+            related = [dict(row) for row in related_rows]
+    
+    for row in related:
+        if isinstance(row.get("created_at"), datetime):
+            row["created_at"] = row["created_at"].isoformat()
+    
+    return {"status": "success", "data": {"related": related}}
 
 @app.post("/api/v1/items")
 async def api_v1_create_item(
@@ -2089,11 +2559,15 @@ async def api_v1_auto_tag_item(
                     logger.error(f"获取情报embedding失败: {e}")
                     raise HTTPException(status_code=500, detail="Failed to get item embedding")
             
+            # 纠正：如果已经是字符串形式，不再进行 json.dumps
+            if not isinstance(item_embedding, str):
+                item_embedding = json.dumps(item_embedding)
+            
             # 直接在数据库中通过向量相似度检索最匹配的系统标签
             # 1 - (embedding <=> item_embedding) 即为余弦相似度
             await cur.execute(
                 """
-                SELECT name, (1 - (embedding <=> %s)) AS similarity
+                SELECT name, (1 - (embedding <=> %s::vector)) AS similarity
                 FROM system_tags
                 WHERE embedding IS NOT NULL
                 ORDER BY similarity DESC
@@ -2128,6 +2602,161 @@ async def api_v1_auto_tag_item(
                     "all_scores": all_scores
                 }
             }
+
+@app.get("/api/v1/graph")
+async def api_v1_get_cognitive_graph(
+    request: Request,
+    user: dict = Depends(require_scope('read'))
+):
+    """获取认知图谱数据：节点（情报/标签）与边（相似度或归属关系）"""
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+    
+    nodes = []
+    edges = []
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            # 1. 获取最近的 50 条情报作为节点
+            await cur.execute(f"""
+                SELECT iv.id, iv.title, iv.embedding
+                FROM intelligence_vault iv
+                WHERE iv.embedding IS NOT NULL AND {access_sql}
+                ORDER BY iv.created_at DESC
+                LIMIT 50
+            """, (user["id"], list(group_roles.keys())))
+            items = await cur.fetchall()
+            
+            # 2. 获取常用标签
+            await cur.execute("""
+                SELECT t.id, t.name, t.embedding
+                FROM tags t
+                WHERE t.embedding IS NOT NULL
+                LIMIT 30
+            """)
+            tags = await cur.fetchall()
+            
+            # 构建节点列表
+            for item in items:
+                nodes.append({
+                    "id": f"item_{item['id']}",
+                    "label": item["title"] or "无标题",
+                    "type": "item"
+                })
+            
+            for tag in tags:
+                nodes.append({
+                    "id": f"tag_{tag['id']}",
+                    "label": tag["name"],
+                    "type": "tag"
+                })
+            
+            # 3. 构建边 (情报与标签的关系)
+            await cur.execute(f"""
+                SELECT it.item_id, it.tag_id
+                FROM item_tags it
+                JOIN intelligence_vault iv ON iv.id = it.item_id
+                WHERE {access_sql}
+            """, (user["id"], list(group_roles.keys())))
+            item_tags = await cur.fetchall()
+            for rel in item_tags:
+                edges.append({
+                    "source": f"item_{rel['item_id']}",
+                    "target": f"tag_{rel['tag_id']}",
+                    "type": "has_tag"
+                })
+
+    return {
+        "status": "success",
+        "data": {
+            "nodes": nodes,
+            "edges": edges
+        }
+    }
+
+@app.post("/api/v1/summarize-batch")
+async def api_v1_summarize_batch(
+    request: Request,
+    data: dict,
+    user: dict = Depends(require_scope('read'))
+):
+    """批量情报综述：针对选中的多个情报进行逻辑联结和总结"""
+    item_ids = data.get("item_ids") or []
+    if not item_ids:
+        raise HTTPException(status_code=400, detail="item_ids is required")
+    
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"""
+                SELECT iv.id, iv.title, iv.content
+                FROM intelligence_vault iv
+                WHERE iv.id = ANY(%s) AND {access_sql}
+            """, (item_ids, user["id"], list(group_roles.keys())))
+            rows = await cur.fetchall()
+    
+    if not rows:
+        return {"status": "success", "data": "未找到指定的情报或无权查看"}
+    
+    context = ""
+    for r in rows:
+        context += f"--- [ID:{r['id']}] {r['title']} ---\n{r['content']}\n\n"
+    
+    system_prompt = "你是一个专业的情报分析专家。请阅读以下多份情报，提取其中的关联点、矛盾点，并给出一份综合综述。请以报告形式输出。"
+    user_prompt = f"以下是情报列表：\n\n{context}\n\n请进行深度分析和综述："
+    
+    summary = await chat_with_ai([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ])
+    
+    return {
+        "status": "success",
+        "data": summary
+    }
+
+@app.get("/api/v1/items/{item_id}/analyze")
+async def api_v1_analyze_item_depth(
+    request: Request,
+    item_id: int,
+    user: dict = Depends(require_scope('read'))
+):
+    """情报深度思考：挖掘单一情报的潜在逻辑、不确定性及行动建议"""
+    group_roles = await get_user_group_roles(request.app.state.db_pool, user["id"])
+    access_sql = "(iv.owner_user_id = %s OR (iv.visibility = 'group' AND iv.group_id = ANY(%s)))"
+    
+    async with request.app.state.db_pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(f"""
+                SELECT iv.title, iv.content
+                FROM intelligence_vault iv
+                WHERE iv.id = %s AND {access_sql}
+            """, (item_id, user["id"], list(group_roles.keys())))
+            item = await cur.fetchone()
+            
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+        
+    system_prompt = (
+        "你是一个具备批判性思维的情报分析员。"
+        "对于提供的情报，请从以下三个维度进行深度分析：\n"
+        "1. 核心逻辑与假设（情报背后的推论是否成立）\n"
+        "2. 潜在不确定性与风险（哪里可能存在偏差或信息缺失）\n"
+        "3. 下一步行动建议（基于此内容，用户应该关注什么或验证什么）"
+    )
+    user_prompt = f"标题：{item['title']}\n内容：{item['content']}"
+    
+    analysis = await chat_with_ai([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ])
+    
+    return {
+        "status": "success",
+        "data": analysis
+    }
 
 @app.post("/api/v1/items/{item_id}/apply-tags")
 async def api_v1_apply_tags_to_item(
@@ -2747,6 +3376,7 @@ async def api_v1_upload_merge(
 @app.post("/api/v1/cloud/upload")
 async def api_v1_cloud_upload(
     request: Request,
+    background_tasks: BackgroundTasks,  # 添加后台任务支持
     file: UploadFile = File(...),
     parent_id: Optional[int] = Form(None),
     visibility: str = Form('private'),
@@ -2839,6 +3469,31 @@ async def api_v1_cloud_upload(
                 """,
                 (item_id, meta["size"], meta["checksum"], storage_path, user["id"])
             )
+            
+            # 立即创建情报库占位条目，以便前端即可显示
+            await cur.execute(
+                """
+                INSERT INTO intelligence_vault 
+                (title, content, owner_user_id, visibility, group_id, vectorization_status, source_file_id)
+                VALUES (%s, %s, %s, %s, %s, 'pending', %s)
+                RETURNING id
+                """,
+                (filename, "正在解析多模态内容...", user["id"], visibility, group_id, item_id)
+            )
+            val_row = await cur.fetchone()
+            vault_item_id = val_row['id']
+    
+    # 添加后台任务：多模态解析文件
+    background_tasks.add_task(
+        process_file_with_multimodal,
+        request.app.state,
+        item_id,
+        storage_path,
+        mime_type,
+        user["id"],
+        filename,
+        vault_item_id # 传入占位符ID
+    )
 
     return {"status": "success", "data": {"id": item_id}}
 

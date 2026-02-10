@@ -92,6 +92,42 @@
         .score { font-size: 11px; color: #0e7c7b; background: #e9f6f5; padding: 2px 6px; border-radius: 6px; }
         .status-pending { font-size: 11px; color: var(--muted); background: #eee; padding: 2px 6px; border-radius: 6px; }
         .status-failed { font-size: 11px; color: #fff; background: var(--accent); padding: 2px 6px; border-radius: 6px; }
+        .file-badge { font-size: 11px; color: #fff; background: #6366f1; padding: 2px 6px; border-radius: 6px; }
+        .drop-zone {
+            border: 2px dashed var(--line);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            color: var(--muted);
+            transition: all 0.3s ease;
+            margin-bottom: 12px;
+            cursor: pointer;
+        }
+        .drop-zone.dragover {
+            border-color: var(--primary);
+            background: rgba(14, 124, 123, 0.05);
+            color: var(--primary);
+        }
+        .chat-output {
+            background: #fff;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 14px;
+            margin-top: 12px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+        .chat-sources {
+            margin-top: 12px;
+            font-size: 12px;
+        }
+        .chat-sources a {
+            color: var(--primary);
+            text-decoration: none;
+        }
+        .chat-sources a:hover {
+            text-decoration: underline;
+        }
         .pagination { display: flex; gap: 12px; align-items: center; justify-content: center; margin-top: 16px; }
         #loader { display: none; text-align: center; color: var(--primary); font-weight: 600; margin: 12px 0; }
         @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
@@ -180,6 +216,13 @@
             <div id="templateInputArea" style="display: none;">
                 <!-- 模板输入框将动态生成 -->
             </div>
+            
+            <div id="dropZone" class="drop-zone" onclick="document.getElementById('fileInput').click()">
+                <div id="dropZoneText">📥 拖拽文件到此处或点击选择 (PDF, Word, PPT, 图片)</div>
+                <div id="selectedFiles" class="muted" style="margin-top: 8px; display: none;"></div>
+                <input type="file" id="fileInput" style="display: none;" multiple onchange="handleFileSelect(event)">
+            </div>
+
             <div class="row">
                 <input id="tagsInput" placeholder="标签 (逗号分隔)">
                 <select id="visibilitySelect" onchange="onVisibilityChange()">
@@ -197,6 +240,7 @@
             <textarea id="searchInput" placeholder="搜索已存内容..." onkeydown="handleKeydown(event, () => doSearch('ai'))" style="margin-bottom: 12px;"></textarea>
             <div class="row">
                 <button class="btn-primary" onclick="doSearch('ai')">AI 搜索</button>
+                <button class="btn-accent" onclick="doSearch('hybrid')">混合检索</button>
                 <button class="btn-accent" onclick="doSearch('key')">关键词</button>
                 <button class="btn-ghost" onclick="doSearch('tag')">标签</button>
                 <button class="btn-ghost" onclick="doSearch('all')">全部</button>
@@ -208,7 +252,30 @@
             </div>
         </div>
 
+        <div class="card">
+            <h3 style="margin-top: 0;">Chat with Data</h3>
+            <textarea id="chatQuery" placeholder="输入问题，例如：总结过去一周关于某主题的关键信息" style="margin-bottom: 12px;"></textarea>
+            <div class="row">
+                <input id="chatTags" placeholder="限定标签 (可选, 逗号分隔)">
+                <input id="chatStartDate" type="date" title="起始日期">
+                <input id="chatEndDate" type="date" title="结束日期">
+                <button class="btn-primary" onclick="chatWithVault()">生成总结</button>
+            </div>
+            <div id="chatOutput" class="chat-output" style="display: none;"></div>
+            <div id="chatSources" class="chat-sources"></div>
+        </div>
+
         <div id="loader">处理中...</div>
+        
+        <!-- Batch Actions Bar -->
+        <div id="batchBar" class="card" style="display: none; position: sticky; top: 20px; z-index: 100; background: var(--primary); color: white; flex-direction: row; align-items: center; justify-content: space-between; padding: 12px 20px;">
+            <div id="batchInfo">已选中 0 项情报</div>
+            <div class="row">
+                <button class="btn-primary" style="background: white; color: var(--primary);" onclick="synthesizeSelected()">✨ 批量综述</button>
+                <button class="btn-ghost" style="color: white; border-color: white;" onclick="clearBatchSelection()">取消</button>
+            </div>
+        </div>
+
         <div class="card" id="results"></div>
 
         <div class="pagination">
@@ -273,6 +340,89 @@
         let currentTemplate = 'none';
         let currentAutoTagItemId = null;
         let currentSuggestedTags = [];
+        let selectedFiles = [];
+
+        // 初始化拖拽上传
+        function initDragAndDrop() {
+            const dropZone = document.getElementById('dropZone');
+            
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }, false);
+            });
+
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => dropZone.classList.add('dragover'), false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, () => dropZone.classList.remove('dragover'), false);
+            });
+
+            dropZone.addEventListener('drop', e => {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                handleFiles(files);
+            }, false);
+        }
+
+        function handleFileSelect(e) {
+            if (e.target.files.length > 0) {
+                handleFiles(e.target.files);
+            }
+            e.target.value = ''; // Reset input to allow selecting same file again
+        }
+
+        function handleFiles(files) {
+            const newFiles = Array.from(files);
+            selectedFiles = [...selectedFiles, ...newFiles];
+            renderSelectedFiles();
+        }
+
+        function removeFile(index) {
+            selectedFiles.splice(index, 1);
+            renderSelectedFiles();
+        }
+
+        function renderSelectedFiles() {
+            const display = document.getElementById('selectedFiles');
+            const text = document.getElementById('dropZoneText');
+            
+            if (selectedFiles.length > 0) {
+                text.innerHTML = `已选择 <b>${selectedFiles.length}</b> 个文件`;
+                display.style.display = 'block';
+                display.innerHTML = '';
+                
+                selectedFiles.forEach((f, i) => {
+                    const row = document.createElement('div');
+                    row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:rgba(0,0,0,0.05); padding:4px 8px; margin-top:4px; border-radius:4px; font-size:0.9rem;';
+                    
+                    const name = document.createElement('span');
+                    name.textContent = f.name;
+                    name.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-right:8px;';
+                    
+                    const del = document.createElement('span');
+                    del.innerHTML = '&times;';
+                    del.style.cssText = 'cursor:pointer; color:#999; font-weight:bold; padding:0 8px; font-size:1.2em; line-height:1;';
+                    del.title = '移除此文件';
+                    del.onmouseover = () => del.style.color = '#ef4444';
+                    del.onmouseout = () => del.style.color = '#999';
+                    del.onclick = (e) => {
+                        e.stopPropagation(); 
+                        removeFile(i);
+                    };
+                    
+                    row.appendChild(name);
+                    row.appendChild(del);
+                    display.appendChild(row);
+                });
+            } else {
+                text.textContent = '📥 拖拽文件到此处或点击选择 (PDF, Word, PPT, 图片)';
+                display.style.display = 'none';
+            }
+        }
 
         // 模板配置
         const templates = {
@@ -477,6 +627,7 @@
             if (isAdmin) {
                 document.getElementById('adminLink').style.display = 'inline';
             }
+            initDragAndDrop();
         }
 
         async function loadGroups() {
@@ -532,14 +683,33 @@
                 const itemEl = document.createElement('div');
                 itemEl.className = 'item';
                 itemEl.id = `item-${item.id}`;
+                itemEl.style.position = 'relative';
+                itemEl.style.paddingLeft = '40px';
+                
+                // 复选框
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.style.position = 'absolute';
+                checkbox.style.left = '12px';
+                checkbox.style.top = '18px';
+                checkbox.style.width = '18px';
+                checkbox.style.height = '18px';
+                checkbox.onclick = (e) => {
+                    e.stopPropagation();
+                    updateSelection(item.id, checkbox.checked);
+                };
+                checkbox.checked = selectedItemIds.has(item.id);
+                itemEl.appendChild(checkbox);
+
                 itemEl.style.cursor = 'pointer';
                 itemEl.onclick = () => viewDetail(item.id);
                 
                 const favoriteIcon = item.is_favorited ? '⭐ ' : '';
                 const archivedBadge = item.is_archived ? '<span class="tag" style="background: var(--muted); color: white;">📦 已归档</span>' : '';
+                const fileBadge = item.source_file_id ? '<span class="file-badge">📄 多模态源文件</span>' : '';
                 
-                // 创建结构
-                itemEl.innerHTML = `
+                // 创建结构 (使用 innerHTML 加上之前的 checkbox 后的其余部分)
+                const innerContent = `
                     <div class="item-title" style="font-weight: 600; font-size: 16px; margin-bottom: 8px;">${favoriteIcon}<span class="title-text"></span></div>
                     <div class="item-preview" style="color: var(--muted); margin-bottom: 8px;"></div>
                     <div class="item-meta" style="font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
@@ -548,6 +718,7 @@
                             ${scoreStr}
                             ${statusStr}
                             ${archivedBadge}
+                            ${fileBadge}
                         </div>
                         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                             <button class="btn-ghost btn-small auto-tag-btn" data-item-id="${item.id}" style="font-size: 11px; padding: 4px 8px;">
@@ -558,6 +729,9 @@
                         </div>
                     </div>
                 `;
+                const contentDiv = document.createElement('div');
+                contentDiv.innerHTML = innerContent;
+                itemEl.appendChild(contentDiv);
                 
                 // 填充纯文本内容（防XSS）
                 const titleElem = itemEl.querySelector('.title-text');
@@ -607,6 +781,51 @@
             render(type, document.getElementById('searchInput').value, 1);
         }
 
+        async function chatWithVault() {
+            const query = document.getElementById('chatQuery').value.trim();
+            if (!query) {
+                alert('请输入问题');
+                return;
+            }
+            const tagsRaw = document.getElementById('chatTags').value;
+            const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
+            const startDate = document.getElementById('chatStartDate').value || null;
+            const endDate = document.getElementById('chatEndDate').value || null;
+            
+            const output = document.getElementById('chatOutput');
+            const sourcesEl = document.getElementById('chatSources');
+            output.style.display = 'block';
+            output.textContent = '正在生成...';
+            sourcesEl.innerHTML = '';
+            
+            const res = await apiCall('/api/v1/chat', 'POST', {
+                query,
+                tags,
+                start_date: startDate,
+                end_date: endDate
+            });
+            if (!res || !res.data) {
+                output.textContent = '生成失败';
+                return;
+            }
+            output.textContent = res.data.answer || '未返回内容';
+            renderChatSources(res.data.sources || []);
+        }
+
+        function renderChatSources(sources) {
+            const sourcesEl = document.getElementById('chatSources');
+            if (!sources || sources.length === 0) {
+                sourcesEl.innerHTML = '<div class="muted">未命中相关情报</div>';
+                return;
+            }
+            const list = sources.map(s => {
+                const title = s.title || '无标题';
+                const score = s.score ? ` (相似度 ${(s.score * 100).toFixed(1)}%)` : '';
+                return `<div>• <a href="/detail?id=${s.id}">${title}</a>${score}</div>`;
+            }).join('');
+            sourcesEl.innerHTML = `<div class="muted" style="margin-bottom: 6px;">引用来源</div>${list}`;
+        }
+
         function toggleShowArchived() {
             currentShowArchived = !currentShowArchived;
             const btn = document.getElementById('archiveToggleText');
@@ -623,9 +842,7 @@
 
         async function addData() {
             const templateRes = getTemplateContent();
-            if (!templateRes) return;
-            const { title, content } = templateRes;
-            if (!content) return alert('内容不能为空');
+            if (!templateRes && selectedFiles.length === 0) return;
             
             const visibility = document.getElementById('visibilitySelect').value;
             const groupId = document.getElementById('groupSelect').value || null;
@@ -636,24 +853,59 @@
             const btn = document.getElementById('addBtn');
             const originalText = btn.innerText;
             btn.disabled = true;
-            btn.innerText = '正在存入...';
+            btn.innerText = '执行中...';
 
             try {
-                const res = await apiCall('/api/v1/items', 'POST', {
-                    title,
-                    content,
-                    visibility,
-                    group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
-                    tags: tagsRaw
-                });
-                
-                if (res && res.status === 'success') {
-                    showToast('已存入情报 ✨');
-                    document.getElementById('addTitle').value = '';
-                    clearTemplateInputs();
-                    document.getElementById('tagsInput').value = '';
-                    render('all', '', 1);
+                // 如果有文件，执行文件上传
+                if (selectedFiles.length > 0) {
+                    for (const file of selectedFiles) {
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        formData.append('visibility', visibility);
+                        if (groupId) formData.append('group_id', groupId);
+                        if (tagsRaw) formData.append('tags', tagsRaw);
+
+                        const res = await fetch('/api/v1/cloud/upload', {
+                            method: 'POST',
+                            headers: {
+                                'Authorization': `Bearer ${authToken}`
+                            },
+                            body: formData
+                        });
+                        
+                        if (!res.ok) {
+                            showToast(`文件 ${file.name} 上传失败`);
+                        }
+                    }
+                    showToast('文件已提交后台解析 ✨');
                 }
+
+                // 如果有文字内容，执行文字存入
+                if (templateRes && templateRes.content) {
+                    const { title, content } = templateRes;
+                    const res = await apiCall('/api/v1/items', 'POST', {
+                        title,
+                        content,
+                        visibility,
+                        group_id: visibility === 'group' ? parseInt(groupId, 10) : null,
+                        tags: tagsRaw
+                    });
+                    
+                    if (res && res.status === 'success') {
+                        showToast('文字情报已存入 ✨');
+                    }
+                }
+                
+                // 清理输入
+                document.getElementById('addTitle').value = '';
+                clearTemplateInputs();
+                document.getElementById('tagsInput').value = '';
+                selectedFiles = [];
+                handleFiles([]); // 重置文件显示
+                render(currentType, currentQuery, 1);
+            } catch (err) {
+                console.error(err);
+                alert('操作失败');
             } finally {
                 btn.disabled = false;
                 btn.innerText = originalText;
@@ -863,6 +1115,61 @@
                 render(currentType, currentQuery, currentPage);
             } else {
                 alert('操作失败，可能权限不足。');
+            }
+        }
+
+        let selectedItemIds = new Set();
+
+        function updateSelection(id, checked) {
+            if (checked) selectedItemIds.add(id);
+            else selectedItemIds.delete(id);
+            
+            const bar = document.getElementById('batchBar');
+            const info = document.getElementById('batchInfo');
+            if (selectedItemIds.size > 0) {
+                bar.style.display = 'flex';
+                info.textContent = `已选中 ${selectedItemIds.size} 项情报`;
+            } else {
+                bar.style.display = 'none';
+            }
+        }
+
+        function clearBatchSelection() {
+            selectedItemIds.clear();
+            document.getElementById('batchBar').style.display = 'none';
+            // 刷新当前页以取消勾选
+            render(currentType, currentQuery, currentPage);
+        }
+
+        async function synthesizeSelected() {
+            if (selectedItemIds.size < 2) {
+                alert('请至少选择 2 项情报进行综述');
+                return;
+            }
+            
+            const ids = Array.from(selectedItemIds);
+            const chatOutput = document.getElementById('chatOutput');
+            const chatSources = document.getElementById('chatSources');
+            
+            chatOutput.style.display = 'block';
+            chatOutput.scrollIntoView({ behavior: 'smooth' });
+            chatOutput.textContent = '🤔 正在对选中的情报进行深度综述分析...';
+            
+            try {
+                const res = await apiCall('/api/v1/summarize-batch', 'POST', { item_ids: ids });
+                if (res && res.data) {
+                    chatOutput.innerHTML = `
+                        <div style="font-weight:600; color:var(--primary); margin-bottom:12px; border-bottom:1px solid var(--line); padding-bottom:8px;">
+                            ✨ 批量情报综述报告
+                        </div>
+                        <div style="line-height:1.6;">${marked.parse(res.data)}</div>
+                    `;
+                    chatSources.innerHTML = `<div class="muted">综述基于选中的 ${ids.length} 项情报生成</div>`;
+                } else {
+                    chatOutput.textContent = '综述生成失败';
+                }
+            } catch (e) {
+                chatOutput.textContent = '发生错误：' + e.message;
             }
         }
 

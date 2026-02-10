@@ -56,6 +56,33 @@
             animation: rise 0.6s ease-out;
             margin-bottom: 24px;
         }
+        .detail-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 280px;
+            gap: 20px;
+        }
+        .detail-side .card {
+            position: sticky;
+            top: 20px;
+        }
+        .related-item {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--line);
+        }
+        .related-item:last-child {
+            border-bottom: none;
+        }
+        .related-title {
+            font-weight: 600;
+            font-size: 14px;
+            color: var(--ink);
+            text-decoration: none;
+        }
+        .related-meta {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 4px;
+        }
         .detail-title {
             font-size: 28px;
             font-weight: 700;
@@ -142,6 +169,32 @@
             font-weight: 600;
         }
         
+        .multimodal-info {
+            background: #f0f7f6;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+            display: flex;
+            align-items: flex-start;
+            gap: 16px;
+        }
+        .file-icon { font-size: 32px; flex-shrink: 0; }
+        .file-details { flex: 1; }
+        .file-name { font-weight: 600; font-size: 16px; color: var(--primary); margin-bottom: 4px; }
+        .file-meta { font-size: 12px; color: var(--muted); }
+        .metadata-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); 
+            gap: 10px; 
+            margin-top: 10px;
+            background: rgba(255,255,255,0.5);
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .metadata-item { font-size: 11px; }
+        .metadata-label { font-weight: 600; color: var(--muted); margin-right: 4px; }
+        
         button {
             padding: 10px 16px; border-radius: 10px; border: 1px solid transparent;
             font-weight: 600; cursor: pointer; font-family: inherit;
@@ -193,6 +246,8 @@
             .actions { flex-wrap: wrap; }
             .card { padding: 18px; }
             .detail-title { font-size: 22px; }
+            .detail-grid { grid-template-columns: 1fr; }
+            .detail-side .card { position: static; }
         }
     </style>
     <!-- Marked.js for Markdown parsing -->
@@ -221,32 +276,49 @@
             </div>
         </div>
 
-        <div id="viewMode">
-            <div class="card">
-                <div class="actions">
-                    <button class="btn-primary" onclick="switchToEditMode()">编辑</button>
-                    <button class="btn-accent btn-small" id="favoriteBtn" onclick="toggleFavorite()">⭐ 收藏</button>
-                    <button class="btn-ghost btn-small" id="archiveBtn" onclick="toggleArchive()">📦 归档</button>
-                    <button class="btn-danger" onclick="deleteItem()">删除</button>
-                    <button class="btn-ghost" onclick="goBack()">返回</button>
+        <div class="detail-grid">
+            <div class="detail-main">
+                <div id="viewMode">
+                    <div class="card">
+                        <div class="actions">
+                            <button class="btn-primary" onclick="switchToEditMode()">编辑</button>
+                            <button class="btn-accent" onclick="analyzeDeeply()">🤔 深度分析</button>
+                            <button class="btn-accent btn-small" id="favoriteBtn" onclick="toggleFavorite()">⭐ 收藏</button>
+                            <button class="btn-ghost btn-small" id="archiveBtn" onclick="toggleArchive()">📦 归档</button>
+                            <button class="btn-danger" onclick="deleteItem()">删除</button>
+                            <button class="btn-ghost" onclick="goBack()">返回</button>
+                        </div>
+                        <h1 class="detail-title" id="itemTitle">加载中...</h1>
+                        <div class="detail-meta" id="itemMeta"></div>
+                        
+                        <div id="multimodalInfoArea"></div>
+                        
+                        <div class="detail-content" id="itemContent"></div>
+                    </div>
                 </div>
-                <h1 class="detail-title" id="itemTitle">加载中...</h1>
-                <div class="detail-meta" id="itemMeta"></div>
-                <div class="detail-content" id="itemContent"></div>
-            </div>
-        </div>
 
-        <div id="editMode" class="edit-form">
-            <div class="card">
-                <h2>编辑情报</h2>
-                <input type="text" id="editTitle" placeholder="标题（可选）">
-                <textarea id="editContent" placeholder="内容（支持Markdown格式）"></textarea>
-                <input type="text" id="editTags" placeholder="标签（逗号分隔）">
-                <div style="display: flex; gap: 12px; margin-top: 12px;">
-                    <button class="btn-primary" onclick="saveEdit()">保存</button>
-                    <button class="btn-ghost" onclick="cancelEdit()">取消</button>
+                <div id="editMode" class="edit-form">
+                    <div class="card">
+                        <h2>编辑情报</h2>
+                        <input type="text" id="editTitle" placeholder="标题（可选）">
+                        <textarea id="editContent" placeholder="内容（支持Markdown格式）"></textarea>
+                        <input type="text" id="editTags" placeholder="标签（逗号分隔）">
+                        <div style="display: flex; gap: 12px; margin-top: 12px;">
+                            <button class="btn-primary" onclick="saveEdit()">保存</button>
+                            <button class="btn-ghost" onclick="cancelEdit()">取消</button>
+                        </div>
+                    </div>
                 </div>
             </div>
+            <aside class="detail-side">
+                <div class="card">
+                    <h3 style="margin-top: 0;">相关情报</h3>
+                    <div id="relatedAction">
+                        <button class="btn-primary btn-small" onclick="loadRelated()" style="width: 100%; margin-bottom: 12px;">🔍 查找关联情报</button>
+                    </div>
+                    <div id="relatedList" class="muted"></div>
+                </div>
+            </aside>
         </div>
     </div>
 
@@ -358,6 +430,34 @@
                 // 更新按钮文本
                 updateActionButtons();
                 
+                // 处理多模态源文件展示
+                const mmArea = document.getElementById('multimodalInfoArea');
+                if (currentItem.source_file_id) {
+                    const metadata = currentItem.source_metadata || {};
+                    let metadataHtml = '';
+                    for (const [key, value] of Object.entries(metadata)) {
+                        if (value && typeof value !== 'object') {
+                            metadataHtml += `<div class="metadata-item"><span class="metadata-label">${key}:</span>${value}</div>`;
+                        }
+                    }
+
+                    mmArea.innerHTML = `
+                        <div class="multimodal-info">
+                            <div class="file-icon">📄</div>
+                            <div class="file-details">
+                                <div class="file-name">${currentItem.source_filename}</div>
+                                <div class="file-meta">
+                                    类型: ${currentItem.source_mime_type} | 
+                                    <a href="/api/v1/cloud/items/${currentItem.source_file_id}/download" target="_blank" style="color: var(--primary); text-decoration: none; font-weight: 600;">下载原始文件</a>
+                                </div>
+                                ${metadataHtml ? `<div class="metadata-grid">${metadataHtml}</div>` : ''}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    mmArea.innerHTML = '';
+                }
+                
                 // 渲染Markdown内容并清理XSS
                 const contentEl = document.getElementById('itemContent');
                 const rawHtml = marked.parse(currentItem.content);
@@ -368,6 +468,83 @@
                 contentEl.innerHTML = cleanHtml;
             } catch (error) {
                 showToast('加载失败: ' + error.message);
+            }
+        }
+
+        function renderRelatedList(container, items, emptyText) {
+            if (!items || items.length === 0) {
+                container.innerHTML = `<div class="muted">${emptyText}</div>`;
+                return;
+            }
+            container.innerHTML = '';
+            items.forEach(item => {
+                const createdAt = item.created_at ? new Date(item.created_at).toLocaleDateString('zh-CN') : '';
+                const score = item.score ? `${Math.round(item.score * 100)}%` : '';
+                const div = document.createElement('div');
+                div.className = 'related-item';
+                div.innerHTML = `
+                    <a class="related-title" href="/detail?id=${item.id}">${item.title || '无标题'}</a>
+                    <div class="related-meta">${createdAt}${score ? ` · 相似度 ${score}` : ''}</div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        async function loadRelated() {
+            const btn = document.querySelector('#relatedAction button');
+            if (btn) btn.disabled = true;
+            document.getElementById('relatedList').innerHTML = '正在分析关联性...';
+            
+            try {
+                // limit=10 (不再请求对立观点)
+                const res = await apiCall(`/api/v1/items/${itemId}/related?limit=10`);
+                if (res && res.data) {
+                    const relatedList = document.getElementById('relatedList');
+                    renderRelatedList(relatedList, res.data.related, '暂无发现高度关联的情报');
+                    if (btn) btn.style.display = 'none'; // 加载成功后隐藏按钮
+                } else {
+                    document.getElementById('relatedList').innerHTML = '<div class="muted">加载失败</div>';
+                    if (btn) btn.disabled = false;
+                }
+            } catch (e) {
+                console.error('加载相关情报失败:', e);
+                document.getElementById('relatedList').innerHTML = '<div class="muted">加载失败</div>';
+                if (btn) btn.disabled = false;
+            }
+        }
+
+        async function analyzeDeeply() {
+            const contentEl = document.getElementById('itemContent');
+            const originalContent = contentEl.innerHTML;
+            
+            // 插入加载提示
+            const loadingDiv = document.createElement('div');
+            loadingDiv.className = 'card';
+            loadingDiv.style.background = '#f0f9ff';
+            loadingDiv.style.borderLeft = '4px solid #0e7c7b';
+            loadingDiv.style.marginTop = '20px';
+            loadingDiv.innerHTML = `
+                <div style="font-weight:600; color:#0e7c7b; margin-bottom:8px;">🤔 正在进行深度逻辑分析...</div>
+                <div class="muted">正在挖掘不确定性、核心假设及行动建议...</div>
+            `;
+            contentEl.appendChild(loadingDiv);
+            loadingDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            try {
+                const res = await apiCall(`/api/v1/items/${itemId}/analyze`);
+                if (res && res.data) {
+                    loadingDiv.innerHTML = `
+                        <div style="font-weight:600; color:#0e7c7b; margin-bottom:12px; display:flex; justify-content:space-between;">
+                            <span>🤔 深度分析报告</span>
+                            <button class="btn-ghost btn-small" onclick="this.parentElement.parentElement.remove()">关闭</button>
+                        </div>
+                        <div style="font-size:14px; line-height:1.6;">${marked.parse(res.data)}</div>
+                    `;
+                } else {
+                    loadingDiv.innerHTML = '<div class="muted">分析失败，请稍后重试</div>';
+                }
+            } catch (e) {
+                loadingDiv.innerHTML = '<div class="muted">发生错误：' + e.message + '</div>';
             }
         }
 
